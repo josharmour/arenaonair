@@ -1,0 +1,78 @@
+name: CI
+
+# DESIGN section 8: three-OS matrix at every wave. One pinned Python per OS
+# (3.12) plus an extra ubuntu job on 3.14 to cover the newest interpreter.
+# The carddb fixture-resolution test skips gracefully when the optional
+# ~/.cache/arenaonair/cards.sqlite cache is absent (it carries its own skipif).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / py${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.12"]
+        include:
+          - os: ubuntu-latest
+            python-version: "3.14"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package with dev extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Run test suite
+        run: pytest tests/ -q
+
+  replay-smoke:
+    name: replay harness smoke (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package with dev extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      # Smoke-run the CLI end-to-end on the smallest fixture (match_02, 118
+      # records). No carddb cache exists on the runner, so this also proves
+      # the pipeline degrades gracefully without card names. Exit code 0 iff
+      # every QR6 threshold passes.
+      - name: Replay harness CLI smoke (match_02.jsonl)
+        run: python tools/replay_harness.py --fixture fixtures/matches/match_02.jsonl --determinism
+
+      - name: Replay harness CLI smoke (match_01.jsonl, JSON report)
+        run: python tools/replay_harness.py --fixture fixtures/matches/match_01.jsonl --determinism --json report.json
+
+      - name: Upload JSON report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: replay-report
+          path: report.json
+          if-no-files-found: ignore
