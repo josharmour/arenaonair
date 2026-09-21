@@ -1,7 +1,7 @@
 # ArenaOnAir — Product Requirements Document
 
-**Version:** 0.1 (draft)
-**Date:** 2026-09-19
+**Version:** 0.2 (draft)
+**Date:** 2026-09-20
 **Status:** Approved for design; implementation not started
 **Sibling project:** `~/repos/mtgacoach` (full coaching app — this project is narration-only, built from scratch for later A/B comparison)
 
@@ -20,7 +20,11 @@ contract: **the listener is an audience member, never a player being instructed.
 
 A small, standalone desktop app that watches an MTG Arena match in real time and narrates it
 like a radio broadcast: what was played, what resolved, who's attacking, how the board and
-life totals are shifting — in plain language a layman can follow. It never says what to play.
+life totals are shifting — in plain language a layman can follow. Like good tournament casters,
+it follows the *story* of the game as much as the plays themselves — momentum swings,
+resource patterns, standoffs turning into races, comebacks taking shape — so long stretches of
+a match feel narrated rather than counted off play by play.
+It never says what to play.
 
 ## 3. Non-goals (explicit)
 
@@ -52,7 +56,46 @@ follow an MTGA match without parsing the board themselves.
 | Board shift | "That's board presence back to even." / "Opponent's up to four creatures now." |
 | Card color/tidbit | Occasional flavor for laymen ("a two-mana removal spell") — template-based, no LLM required. |
 | Match ends | Result line: "That's game — <winner> takes it." Then back to watching. |
-| Nothing happening | **Silence.** No filler narration of priority passes or draw steps by default. |
+| Quiet stretch mid-match | Narrative commentary fills the gap the way casters do — momentum, resources, the shape of the game (see Narrative layer below) — never filler recaps of priority passes. |
+| Nothing happening (no match) | **Silence.** Zero unprompted speech when no match is active. |
+
+### Narrative layer (runs alongside play-by-play)
+
+Good MTG tournament casters spend as much airtime on the *dynamics* of the game as on
+individual plays. ArenaOnAir v1 does the same with a lightweight story model derived from
+game state — no LLM required:
+
+- **Momentum / arc tracking:** who's been on offense over the last several turns, whether the
+  lead is changing hands, comeback situations ("down to five but the board's about to even out").
+- **Resource stories:** land floods vs land screw (streaks, not single drops), hand-size
+  pressure, how many turns of unanswered aggression a player has strung together.
+- **Standoffs & races:** stabilized boards neither side wants to attack into; races where both
+  players ignore each other and go to the face; whether damage traded this turn accelerates the clock.
+- **Story callbacks:** referencing earlier beats — "that planeswalker they answered two turns ago
+  would sure be nice right now" — so commentary accumulates a memory of the game rather than
+  treating each turn as isolated.
+- **Speculation, clearly framed:** caster-style anticipation ("if that resolves, the race gets
+  real") phrased as observation, never instruction. Opponent-hidden-info guesses stay
+  speculative or are omitted.
+
+Narrative beats are event-driven too (derived statistics crossing thresholds emit
+`narrative_*` events), so they inherit the same debounce/suppression/variety machinery as
+play-by-play — they are not a free-running chatter loop.
+
+### Anti-repetition contract
+
+Templates stay (deterministic, testable), but sameness is actively managed:
+
+- **Variety engine:** every event kind draws from a template pool with structural variety
+  (different sentence shapes, not just synonym swaps), weighted to avoid recently-used picks;
+  recent-phrase history is tracked per kind and per match.
+- **Context-aware slots:** templates consume game context (turn count, life totals, board
+  size, streak lengths) so repeated event kinds still produce different sentences — land drop
+  #12 reads differently from land drop #3.
+- **Drone detection:** the replay harness scores consecutive same-shape utterances; a stretch
+  of N near-identical sentences is a test failure, not a cosmetic nit.
+- **Escalating brevity:** repeated low-salience events compress ("another land for Josh",
+  then just acknowledged silently) instead of re-speaking full sentences.
 
 ### Verbosity settings
 - **Quiet** — match open/close + combat + life swings only.
@@ -75,8 +118,15 @@ follow an MTGA match without parsing the board themselves.
 - **FR4** Render events as spoken sentences via template engine (no LLM in the critical path).
 - **FR5** Speak through local TTS with a speech queue; new urgent events may preempt stale ones.
 - **FR6** Enforce silence discipline: cooldowns, repetition suppression, verbosity gating.
-- **FR7** Run on Windows (primary MTGA host) and macOS/Linux dev machines.
+- **FR7** Cross-platform from day one: identical feature set and first-class support on
+  Windows, macOS, and Linux. Platform differences (log paths, TTS engines, tray APIs) live
+  behind interfaces; every wave's tests run on all three OSes in CI.
 - **FR8** Operate fully offline/local except card-name data (bundled or cached).
+- **FR9** Maintain a lightweight narrative/story model (momentum, resource streaks, arcs,
+  standoffs) alongside play-by-play state; emit narrative events from it per PRD §5.
+- **FR10** Enforce the anti-repetition contract: template pools with structural variety,
+  context-aware slot filling, recent-use weighting, escalating brevity for repeats, and
+  drone-detection scoring in the replay harness.
 
 ## 7. Quality requirements
 
@@ -88,6 +138,9 @@ follow an MTGA match without parsing the board themselves.
 - **QR4 Footprint:** single Python process; no GPU requirement; < 300 MB RAM with TTS loaded.
 - **QR5 Testability:** every event-detection rule unit-testable against recorded log fixtures;
   replay harness can score a full match transcript deterministically.
+- **QR6 Variety:** over any full-match replay, no two consecutive utterances share a sentence
+  shape; no template renders identically more than once within any rolling window of 8
+  utterances; repeated-event stretches compress rather than drone (verified by replay harness).
 
 ## 8. Success metrics
 
@@ -97,6 +150,10 @@ follow an MTGA match without parsing the board themselves.
 - Narration latency p95 ≤ 3 s measured by replay harness timestamps.
 - Listener test (Josh): ≥ 80% of notable plays named correctly; no instruction-style phrasing
   ever spoken.
+- Variety audit: replay-harness drone score passes on every fixture match (QR6); long-match
+  spot check — narration at turn 20 sounds no more templated than at turn 3.
+- Cross-platform parity: identical feature set verified on Windows, macOS, and Linux
+  (CI matrix green on all three; TTS fallback chain exercised per-OS).
 
 ## 9. Risks & mitigations
 
@@ -105,7 +162,9 @@ follow an MTGA match without parsing the board themselves.
 | Hidden information limits narration richness | Accept: public-info narration only (battlefield/stack/graveyard/life). Phrase opponent-hand inferences as speculation or omit. |
 | Log bursts cause triple-narration of one play (cast→resolve→ETB) | Event debouncer merges correlated events within a window into one sentence (design doc §4.4). |
 | GRE format changes break parsing | Parser is isolated behind a state-builder interface; fixtures from live logs catch regressions; degrade to "something happened" silence rather than wrong narration. |
-| TTS engine availability varies by OS | Same layered fallback approach as mtgacoach tts.py (Kokoro → SAPI/espeak), but behind one narrow `Speaker` interface so engines are swappable. |
+| TTS engine availability varies by OS | Layered fallback chain per platform (Kokoro → SAPI on Windows / `say` on macOS / espeak-ng or Piper on Linux), behind one narrow `Speaker` interface so engines are swappable; CI exercises each OS's chain. |
+| Template variety decays into drone over long matches | Anti-repetition contract (PRD §5): structural template pools, context-aware slots, recent-use weighting, escalating brevity; QR6 enforced by replay-harness drone scoring. |
+| Narrative layer drifts into chatter or wrong-story takes | Narrative beats are threshold-crossing events with the same suppression machinery as play-by-play; story model is deterministic and unit-tested; speculation always framed as observation. |
 | Repeating mtgacoach's silent-speech bugs | Design doc §6 makes delivery confirmation + session-scope staleness first-class requirements with replay-harness tests; this is the single most important lesson carried over. |
 
 ## 10. Future (post-v1)
