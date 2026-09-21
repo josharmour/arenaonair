@@ -324,6 +324,55 @@ class EngineSpeaker:
         self.engine.shutdown()
 
 
+class ChainedSpeaker:
+    """Speaker that walks an ordered engine list at speak time.
+
+    build_speaker_chain() picks the first engine AVAILABLE at probe time;
+    ChainedSpeaker keeps the whole chain so a runtime failure (engine dies,
+    audio device vanishes, model load blows up) falls through to the next
+    engine instead of dropping the utterance. Matches DESIGN §3.7's
+    "layered fallback ... behind one narrow interface".
+    """
+
+    def __init__(self, engines: list) -> None:
+        from .platform.tts import TTSEngine
+
+        if not engines or not all(isinstance(e, TTSEngine) for e in engines):
+            raise TypeError("ChainedSpeaker expects non-empty TTSEngine list")
+        self.engines = engines
+        self._active = 0
+
+    @property
+    def engine(self):
+        """Currently active engine (for diagnostics/tests)."""
+        return self.engines[self._active]
+
+    def speak(self, utterance: Utterance) -> DeliveryResult:
+        reasons: list[str] = []
+        for idx, eng in enumerate(self.engines):
+            result = eng.speak(utterance)
+            if result.ok:
+                self._active = idx
+                return result
+            reasons.append(f"{eng.name}: {result.reason}")
+            logger.warning(
+                "TTS engine %s failed (%s); falling through chain",
+                eng.name, result.reason)
+        return DeliveryResult(
+            uid=utterance.uid,
+            ok=False,
+            reason="all engines failed: " + " | ".join(reasons),
+        )
+
+    def cancel(self) -> None:
+        for eng in self.engines:
+            eng.cancel()
+
+    def shutdown(self) -> None:
+        for eng in self.engines:
+            eng.shutdown()
+
+
 
 class FakeSpeaker:
     """Scriptable Speaker double covering every scenario in test_speech.py.
