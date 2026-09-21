@@ -7,8 +7,14 @@ from pathlib import Path
 
 from .logpath import _first_existing
 
-def _base() -> Path:
+def _bases() -> list[Path]:
+    return [
+        Path.home() / "Library" / "Logs" / "Wizards Of The Coast" / "MTGA",
+        Path.home() / "Library" / "Application Support" / "com.wizards.mtga",
+    ]
 
+
+def _base() -> Path:
     return Path.home() / "Library" / "Application Support" / "com.wizards.mtga"
 
 # Best-effort: the exact on-disk layout under com.wizards.mtga has varied
@@ -31,20 +37,26 @@ def _rank(p: Path) -> tuple[int, float]:
 def default_player_log_path() -> Path:
     """Locate Player.log on macOS via recursive glob.
 
-    Documented best effort (task spec): the canonical base is
-    ``~/Library/Application Support/com.wizards.mtga``; beneath it Arena uses
-    dated subdirectories, so we glob ``**/*.log``, prefer files literally named
-    ``Player.log`` (then ``Player-prev.log``), and break ties by newest mtime.
+    Documented best effort (task spec): the canonical bases are
+    ``~/Library/Logs/Wizards Of The Coast/MTGA`` (Steam / standard macOS Unity)
+    and ``~/Library/Application Support/com.wizards.mtga`` (standalone/Epic).
+    Beneath them Arena may use dated subdirectories, so we check direct locations,
+    glob ``**/*.log``, prefer files literally named ``Player.log`` (then
+    ``Player-prev.log``), and break ties by newest mtime.
     """
-    direct = [_base() / "Logs" / "Player.log", _base() / "Player.log"]
+    direct = [
+        Path.home() / "Library" / "Logs" / "Wizards Of The Coast" / "MTGA" / "Player.log",
+        _base() / "Logs" / "Player.log",
+        _base() / "Player.log",
+    ]
     for cand in direct:
         if cand.is_file():
             return cand
-    if _base().is_dir():
-        logs = sorted(
-            (p for p in _base().glob("**/*.log") if p.is_file()),
-            key=lambda p: (_rank(p)[0], -_rank(p)[1]),
-        )
-        if logs:
-            return logs[0]
+    logs: list[Path] = []
+    for base in _bases():
+        if base.is_dir():
+            logs.extend(p for p in base.glob("**/*.log") if p.is_file())
+    if logs:
+        logs.sort(key=lambda p: (_rank(p)[0], -_rank(p)[1]))
+        return logs[0]
     return _first_existing(direct)

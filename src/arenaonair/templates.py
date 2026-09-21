@@ -348,15 +348,15 @@ TEMPLATE_POOLS = {
 
     ev.LIFE_CHANGE: [
             # STAT-FWD (before/after ladder readout)
-            "{actor}: {from_life} down to {to_life}.",
+            "{actor}: {from_life} {direction_prep} to {to_life}.",
             # CONSEQUENCE-FIRST (swing magnitude forward)
-            "{delta_word}-point swing against {actor}{danger_clause}.",
+            "{delta_word}-point swing {against_or_for} {actor}{danger_clause}.",
             # ASIDE (lean gain/loss call)
             "Life moves for {actor} -- now sitting at {to_life}.",
             # COLOR (danger-zone drama when low, calm otherwise)
             "{danger_color}",
             # ACTOR-FIRST recovery framing
-            "{actor} claws back to {to_life}.",
+            "{actor} {claws_or_drops} {to_life}.",
             # CARD-NEUTRAL trend framing
             "The life totals drift apart -- {actor} at {to_life}.",
     ],
@@ -493,7 +493,7 @@ TEMPLATE_SHORT_POOLS = {
         "{delta_word} life swing.",
         "Life moves: {to_life}.",
         "{to_life} and falling." if False else "{to_life} for {actor}.",
-        "Down to {to_life}.",
+        "{down_or_up} to {to_life}.",
         "{delta_word}-point move.",
     ],
     ev.BOARD_SHIFT: [

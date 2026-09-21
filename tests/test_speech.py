@@ -165,6 +165,37 @@ class TestFlush:
 
 
 # ---------------------------------------------------------------------------
+# Fast-tempo play pruning
+# ---------------------------------------------------------------------------
+
+class TestPrunePlays:
+    def test_prune_plays_removes_gameplay_leaves_boundaries(self):
+        q = SpeechQueue()
+        q.set_active_match("m1")
+        q.enqueue(mk("op", kind="match_start", match="m1", salience=3))
+        q.enqueue(mk("cast1", kind="cast", match="m1", salience=1))
+        q.enqueue(mk("atk1", kind="attack_declared", match="m1", salience=2))
+        q.enqueue(mk("end", kind="game_end", match="m1", salience=3))
+        assert q.play_count("m1") == 2
+        removed = q.prune_plays("m1")
+        assert removed == 2
+        assert q.play_count("m1") == 0
+        remaining_kinds = [u.kind for u in q.drain()]
+        assert "cast" not in remaining_kinds
+        assert "attack_declared" not in remaining_kinds
+        assert set(remaining_kinds) == {"match_start", "game_end"}
+
+    def test_prune_plays_only_affects_target_match(self):
+        q = SpeechQueue()
+        q.enqueue(mk("c1", kind="cast", match="m1"))
+        q.enqueue(mk("c2", kind="cast", match="m2"))
+        removed = q.prune_plays("m1")
+        assert removed == 1
+        assert len(q) == 1
+        assert q._items[0].match_id == "m2"
+
+
+# ---------------------------------------------------------------------------
 # Session-scoped staleness (NO turn-number gating anywhere)
 # ---------------------------------------------------------------------------
 
@@ -440,6 +471,7 @@ class TestChainDispatch:
 
         import arenaonair.platform.tts_linux as lin
         monkeypatch.setattr(lin.PiperEngine, "available", lambda self: False)
+        monkeypatch.setattr(lin.EspeakNgEngine, "available", lambda self: True)
 
         speaker = build_speaker_chain(platform="linux")
         assert isinstance(speaker, EngineSpeaker)

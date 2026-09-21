@@ -278,31 +278,102 @@ class EventDiffer:
             return []
 
     def detect_cast(self, prev, cur):
-        """New ActionType_Cast actions this window (cross-window deduped)."""
+        """Spells cast this window via ZoneTransfer annotations or stack entry.
+
+        Falls back to ActionType_Cast actions for synthetic test messages where
+        no real GRE game state is present.
+        """
         try:
-            objs = cur.objects or {}
+            objs = (cur.objects or {}) if cur else {}
+            objs_prev = (prev.objects or {}) if prev else {}
             out = []
             ts_base = getattr(cur, "ts", 0.0) or 0.0
             idx = 0
-            for seat_id, action in _iter_actions(self._window_msgs):
-                if _norm_enum(action.get("actionType")) != "actiontype_cast":
+
+            # 1. Authoritative: ZoneTransfer annotations with CastSpell category
+            for ann in _iter_annotations(self._window_msgs):
+                types = _annotation_types(ann)
+                if "AnnotationType_ZoneTransfer" not in types:
                     continue
-                iid = _as_int(action.get("instanceId"))
-                key = (iid, seat_id)
-                if key in self._seen_casts:
+                details = _detail_map(ann.get("details"))
+                cat = str(details.get("category") or "")
+                if "cast" not in cat.lower():
                     continue
-                self._seen_casts.add(key)
-                ref = objs.get(iid) if iid is not None else None
-                name = getattr(ref, "name", None) if ref is not None else None
-                grp_id = getattr(ref, "grp_id", None) if ref is not None \
-                    else _as_int(action.get("abilityGrpId"))
-                out.append(Event(kind=ev.CAST,
-                                 seat=seat_id,
-                                 payload={"name": name, "grp_id": grp_id,
-                                          "instance_id": iid},
-                                 ts=ts_base + idx * 0.01,
-                                 salience=ev.SALIENCE_HIGH))
-                idx += 1
+                for aid in ann.get("affectedIds") or []:
+                    iid = _as_int(aid)
+                    if iid is None:
+                        continue
+                    ref = objs.get(iid) or objs_prev.get(iid)
+                    seat = (getattr(ref, "controller_seat", None)
+                            or getattr(ref, "owner_seat", None)
+                            or _as_int(ann.get("affectorId")))
+                    if seat is None and cur and cur.turn_info:
+                        seat = cur.turn_info.active_player
+                    key = (iid, seat)
+                    if key in self._seen_casts:
+                        continue
+                    self._seen_casts.add(key)
+                    name = getattr(ref, "name", None)
+                    grp_id = getattr(ref, "grp_id", None)
+                    out.append(Event(kind=ev.CAST,
+                                     seat=seat,
+                                     payload={"name": name, "grp_id": grp_id,
+                                              "instance_id": iid},
+                                     ts=ts_base + idx * 0.01,
+                                     salience=ev.SALIENCE_HIGH))
+                    idx += 1
+
+            # 2. Stack additions for real spells
+            is_real_game = any(_gsm_of(m).get("gameStateId") is not None
+                               for m in self._window_msgs)
+            if self._last_stage == "gamestage_play" or \
+                    self._latest_stage(self._window_msgs) == "gamestage_play":
+                prev_stack = _zone_object_ids(prev, ("stack",))
+                cur_stack = _zone_object_ids(cur, ("stack",))
+                for iid in sorted(cur_stack - prev_stack):
+                    ref = objs.get(iid)
+                    if ref is None:
+                        continue
+                    types = getattr(ref, "card_types", ()) or ()
+                    if any(t in types for t in (
+                            "creature", "instant", "sorcery", "enchantment",
+                            "artifact", "planeswalker", "battle")):
+                        seat = (getattr(ref, "controller_seat", None)
+                                or getattr(ref, "owner_seat", None))
+                        key = (iid, seat)
+                        if key not in self._seen_casts:
+                            self._seen_casts.add(key)
+                            out.append(Event(
+                                kind=ev.CAST,
+                                seat=seat,
+                                payload={"name": getattr(ref, "name", None),
+                                         "grp_id": getattr(ref, "grp_id", None),
+                                         "instance_id": iid},
+                                ts=ts_base + idx * 0.01,
+                                salience=ev.SALIENCE_HIGH))
+                            idx += 1
+
+            # 3. Synthetic test fallback (only when NOT a real GRE log)
+            if not out and not is_real_game:
+                for seat_id, action in _iter_actions(self._window_msgs):
+                    if _norm_enum(action.get("actionType")) != "actiontype_cast":
+                        continue
+                    iid = _as_int(action.get("instanceId"))
+                    key = (iid, seat_id)
+                    if key in self._seen_casts:
+                        continue
+                    self._seen_casts.add(key)
+                    ref = objs.get(iid) if iid is not None else None
+                    name = getattr(ref, "name", None) if ref is not None else None
+                    grp_id = (getattr(ref, "grp_id", None) if ref is not None
+                              else _as_int(action.get("abilityGrpId")))
+                    out.append(Event(kind=ev.CAST,
+                                     seat=seat_id,
+                                     payload={"name": name, "grp_id": grp_id,
+                                              "instance_id": iid},
+                                     ts=ts_base + idx * 0.01,
+                                     salience=ev.SALIENCE_HIGH))
+                    idx += 1
             return out
         except Exception:
             return []
@@ -342,6 +413,8 @@ class EventDiffer:
                         ts=ts_base + idx * 0.01,
                         salience=ev.SALIENCE_HIGH))
                 else:
+                    if dest is None and name is None:
+                        continue
                     out.append(Event(
                         kind=ev.RESOLVE,
                         seat=seat,
@@ -545,7 +618,7 @@ class EventDiffer:
             return []
 
     def detect_combat_damage(self, prev, cur):
-        """AnnotationType_DamageDealt where target is a seat (best effort)."""
+        """AnnotationType_DamageDealt where target is a player seat."""
         try:
             out = []
             ts_base = getattr(cur, "ts", 0.0) or 0.0
@@ -563,16 +636,23 @@ class EventDiffer:
                 source_iid = _as_int(ann.get("affectorId"))
                 for target in ann.get("affectedIds") or []:
                     target_int = _as_int(target)
-                    if target_int is None:
+                    if target_int not in (1, 2):
                         continue
                     pair_key = (source_iid, target_int, amount_int)
                     if pair_key in emitted_pairs:
                         continue
                     emitted_pairs.add(pair_key)
-                    target_seat = target_int if target_int in (1, 2) else None
+                    target_seat = target_int
+                    source_ref = ((cur.objects or {}).get(source_iid)
+                                  or ((prev.objects or {}).get(source_iid)
+                                      if prev else None))
+                    attacker_seat = (getattr(source_ref, "controller_seat", None)
+                                     or getattr(source_ref, "owner_seat", None))
+                    if attacker_seat is None:
+                        attacker_seat = 1 if target_seat == 2 else 2
                     out.append(Event(
                         kind=ev.COMBAT_DAMAGE,
-                        seat=target_seat,
+                        seat=attacker_seat,
                         payload={"amount": amount_int,
                                  "source_instance": source_iid,
                                  "target_seat": target_seat},
@@ -692,7 +772,7 @@ class EventDiffer:
                              None)
             ap_before = getattr(getattr(prev, "turn_info", None),
                                 "active_player", None) if prev else None
-            if ap_now is None or ap_now == ap_before:
+            if ap_now is None or ap_before is None or ap_now == ap_before:
                 return []
             ts_base = getattr(cur, "ts", 0.0) or 0.0
             return [Event(kind=ev.TURN_START,

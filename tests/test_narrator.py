@@ -308,6 +308,34 @@ class TestEscalatingBrevity:
 
 
 # ---------------------------------------------------------------------------
+# Fast-tempo adaptation
+# ---------------------------------------------------------------------------
+
+class TestFastTempoAdaptation:
+    def test_fast_tempo_silences_low_salience(self):
+        n = Narrator()
+        state = make_state()
+        e_low = make_event(ev.LAND_DROP, 1, {"name": "Forest"}, salience=1)
+        assert n.render(e_low, state, tempo="fast") is None
+
+    def test_fast_tempo_renders_high_salience_with_short_pool(self):
+        n = Narrator()
+        state = make_state()
+        e_cast = make_event(ev.CAST, 1, {"name": "Lightning Bolt"}, salience=2)
+        u_fast = n.render(e_cast, state, tempo="fast")
+        assert u_fast is not None
+        assert "Lightning Bolt" in u_fast.text
+        assert len(u_fast.text.split()) <= 4
+
+    def test_fast_tempo_preserves_must_speak_events(self):
+        n = Narrator()
+        state = make_state()
+        e_end = make_event(ev.GAME_END, None, {"reason": "loss"}, salience=3)
+        u = n.render(e_end, state, tempo="fast")
+        assert u is not None
+
+
+# ---------------------------------------------------------------------------
 # Determinism
 # ---------------------------------------------------------------------------
 

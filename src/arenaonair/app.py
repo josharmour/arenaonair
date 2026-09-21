@@ -31,11 +31,18 @@ import threading
 import time
 
 from . import config as config_mod
+from .carddb import DEFAULT_DB_PATH, CardDb
 from .differ import EventDiffer
 from .gre_parser import parse_line_all
 from .models import DeliveryResult
 from .narrator import Narrator
-from .speech import SpeechPump, SpeechQueue, build_speaker_chain
+from .speech import (
+    PRESERVED_KINDS,
+    SALIENCE_MUST_SPEAK,
+    SpeechPump,
+    SpeechQueue,
+    build_speaker_chain,
+)
 from .state_builder import GameStateBuilder
 from .story import StoryModel
 from .watcher import LogWatcher
@@ -115,7 +122,16 @@ class ArenaOnAirApp:
         self.dry_run = bool(dry_run)
         self.once_mode = bool(once_mode)
 
-        self.builder = GameStateBuilder()
+        carddb_path = getattr(self.config, "carddb_path", None) or DEFAULT_DB_PATH
+        try:
+            self.carddb = CardDb(carddb_path)
+            name_resolver = self.carddb.as_resolver()
+        except Exception as exc:
+            logger.warning("could not initialize card database: %s", exc)
+            self.carddb = None
+            name_resolver = None
+
+        self.builder = GameStateBuilder(name_resolver=name_resolver)
         self.differ = EventDiffer()
         self.story = StoryModel(
             thresholds=self.config.story_thresholds or None)
@@ -134,6 +150,8 @@ class ArenaOnAirApp:
         self._state = AppState.STARTING
         self._match_id = None
         self._last_utterance = None
+        self._last_event_time = 0.0
+        self._last_play_snap_id = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -196,6 +214,12 @@ class ArenaOnAirApp:
             except Exception:
                 logger.debug("speaker shutdown raised", exc_info=True)
 
+        if self.carddb is not None:
+            try:
+                self.carddb.close()
+            except Exception:
+                logger.debug("carddb close raised", exc_info=True)
+
         with self._state_lock:
             self._state = AppState.STOPPED
 
@@ -231,6 +255,10 @@ class ArenaOnAirApp:
                 if self.once_mode and idle_polls >= IDLE_POLLS_BEFORE_DONE:
                     logger.info("--once: watcher idle %d polls; done",
                                 idle_polls)
+                    deadline = time.monotonic() + _DRAIN_WAIT_SECONDS
+                    while len(self.queue) > 0 and time.monotonic() < deadline \
+                            and not self._stop_event.is_set():
+                        time.sleep(_DRAIN_POLL_SLEEP)
                     return
                 if self._stop_event.wait(interval):
                     return
@@ -245,12 +273,14 @@ class ArenaOnAirApp:
                 if self._stop_event.is_set():
                     return
 
-            # Let this batch finish voicing before pulling more lines so
-            # broadcast order tracks log order across snapshots.
-            deadline = time.monotonic() + _DRAIN_WAIT_SECONDS
-            while len(self.queue) > 0 and time.monotonic() < deadline \
-                    and not self._stop_event.is_set():
-                time.sleep(_DRAIN_POLL_SLEEP)
+            # In --once mode, pace batch reading to allow the test/smoke speaker
+            # to voice each batch in order. In live mode, NEVER block here so
+            # the watcher stays strictly real-time with the game log.
+            if self.once_mode:
+                deadline = time.monotonic() + _DRAIN_WAIT_SECONDS
+                while len(self.queue) > 0 and time.monotonic() < deadline \
+                        and not self._stop_event.is_set():
+                    time.sleep(_DRAIN_POLL_SLEEP)
 
 
     # ------------------------------------------------------------------
@@ -290,9 +320,37 @@ class ArenaOnAirApp:
                     removed,
                 )
 
-            for event in self._events_for(snap, backlog, prev_snap):
+            events = self._events_for(snap, backlog, prev_snap)
+            snap_id = getattr(snap, "snapshot_id", None)
+
+            # Fast tempo and pruning discipline:
+            # During live play, when the player takes an action (cast, attack,
+            # block, land drop, counter), check if previous speech was not
+            # spoken in time.
+            tempo = "normal"
+            if not self.once_mode and snap_id != self._last_play_snap_id:
+                has_player_action = any(
+                    e.kind in ("cast", "attack_declared", "block_declared",
+                               "land_drop", "counter")
+                    for e in events
+                )
+                if has_player_action:
+                    unspoken_plays = self.queue.play_count(self._match_id)
+                    is_busy = bool(self.pump and getattr(self.pump, "current", None) is not None)
+
+                    if unspoken_plays > 0 or is_busy:
+                        tempo = "fast"
+                        pruned = self.queue.prune_plays(self._match_id)
+                        if pruned > 0:
+                            logger.info("Fast tempo: pruned %d un-spoken play(s)", pruned)
+
+                    self._last_event_time = time.monotonic()
+                    self._last_play_snap_id = snap_id
+
+            for event in events:
                 self._handle_event(event, snap,
-                                   previous_match_id=previous_match_id)
+                                   previous_match_id=previous_match_id,
+                                   tempo=tempo)
             # Window consumed: the next diff must only see messages that
             # arrived after this snapshot.
             backlog = []
@@ -315,23 +373,34 @@ class ArenaOnAirApp:
         events.extend(self.story.update(snap))
         return events
 
-    def _handle_event(self, event, snap, previous_match_id=None) -> None:
+    def _handle_event(self, event, snap, previous_match_id=None, tempo="normal") -> None:
         """Gate -> render -> enqueue one event (with end-of-game sealing)."""
         if not passes_gate(event, self.config.verbosity):
             return
 
-        utt = self.narrator.render(event, snap)
+        utt = self.narrator.render(event, snap, tempo=tempo)
         if utt is None:
             return
 
         if event.kind in ("game_end", "match_end"):
-            # Closing line first; await its delivery; then seal the match
-            # so no post-end speech can follow it. Seal the PREVIOUSLY
-            # active match: a game_end detected alongside a match-id
-            # change belongs to the outgoing broadcast, and flushing the
-            # new id here would seal the incoming match before it starts.
+            # Closing line first:
+            # 1. Purge any pending play-by-play utterances for this match so
+            #    stale plays never continue after game/match finishes.
             seal_target = previous_match_id \
                 if previous_match_id is not None else utt.match_id
+            removed = self.queue.prune_plays(seal_target)
+            if removed > 0:
+                logger.info("%s purged %d pending play(s)", event.kind, removed)
+
+            # 2. Cancel in-flight low-salience speech if pump is currently voicing
+            if self.pump and getattr(self.pump, "current", None) is not None:
+                in_flight = getattr(self.pump, "current", None)
+                if in_flight and in_flight.salience < SALIENCE_MUST_SPEAK:
+                    cancellable = getattr(self.pump.speaker, "cancel", None)
+                    if callable(cancellable):
+                        logger.info("Preempting %s for %s", in_flight.uid, event.kind)
+                        cancellable()
+
             self.queue.enqueue(utt)
             self._last_utterance = utt.text
             self._await_delivery(utt)

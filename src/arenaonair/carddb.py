@@ -144,6 +144,25 @@ class CardDb:
         resolved = sum(1 for gid in probe if self.lookup(gid) is not None)
         return (total, resolved)
 
+    def as_resolver(self):
+        """Return a memoized (grp_id -> card_name) resolver for GameStateBuilder."""
+        cache: dict[int, Optional[str]] = {}
+
+        def resolve(grp_id: int) -> Optional[str]:
+            if not isinstance(grp_id, int) or isinstance(grp_id, bool):
+                return None
+            if grp_id in cache:
+                return cache[grp_id]
+            try:
+                info = self.lookup(grp_id)
+            except Exception:
+                info = None
+            name = getattr(info, "name", None)
+            cache[grp_id] = name if isinstance(name, str) and name else None
+            return cache[grp_id]
+
+        return resolve
+
     # -- internals ----------------------------------------------------------
 
     def _log_missing(self, grp_id: int) -> None:

@@ -71,10 +71,10 @@ class Narrator:
     # Public API
     # ------------------------------------------------------------------
 
-    def render(self, event: Event, state: GameState | None):
+    def render(self, event: Event, state: GameState | None, tempo: str = "normal"):
         """Event (+optional state) -> Utterance | None. Never raises."""
         try:
-            return self._render_inner(event, state)
+            return self._render_inner(event, state, tempo=tempo)
         except Exception:
             return None
 
@@ -87,11 +87,18 @@ class Narrator:
     # Core pipeline
     # ------------------------------------------------------------------
 
-    def _render_inner(self, event, state):
+    def _render_inner(self, event, state, tempo: str = "normal"):
         if event is None:
             return None
         kind = getattr(event, "kind", None)
         if not isinstance(kind, str) or kind not in ev.ALL_KINDS:
+            return None
+
+        # Fast-tempo discipline:
+        # 1. Silence low-salience events (< SALIENCE_HIGH) during fast tempo,
+        #    preserving critical events (game_end, match_start, etc.).
+        salience = int(getattr(event, "salience", 0) or 0)
+        if tempo == "fast" and salience < ev.SALIENCE_HIGH:
             return None
 
         pool = tpl.TEMPLATE_POOLS.get(kind) or tpl.NARRATIVE_POOLS.get(kind)
@@ -108,7 +115,7 @@ class Narrator:
             self._streak_count[kind] = 0
         self._pending_kind = kind
 
-        # --- escalating brevity --------------------------------------------
+        # --- escalating brevity / tempo adaptation -------------------------
         if self._streak_sig.get(kind) == sig:
             self._streak_count[kind] = self._streak_count.get(kind, 0) + 1
         else:
@@ -116,7 +123,7 @@ class Narrator:
             self._streak_count[kind] = 1
 
         family = "full"
-        if self._streak_count[kind] >= 2 and short_pool:
+        if (tempo == "fast" or self._streak_count[kind] >= 2) and short_pool:
             family = "short"
         if (self._streak_count[kind] >= 3
                 and getattr(event, "salience", 0) < ev.SALIENCE_HIGH):
@@ -298,6 +305,22 @@ class Narrator:
         except Exception:
             danger = False
         if kind == ev.LIFE_CHANGE:
+            if isinstance(delta, int) and delta > 0:
+                slots["direction_prep"] = "up"
+                slots["against_or_for"] = "for"
+                slots["claws_or_drops"] = "claws back to"
+                slots["down_or_up"] = "Up"
+            elif isinstance(delta, int) and delta < 0:
+                slots["direction_prep"] = "down"
+                slots["against_or_for"] = "against"
+                slots["claws_or_drops"] = "drops to"
+                slots["down_or_up"] = "Down"
+            else:
+                slots["direction_prep"] = "to"
+                slots["against_or_for"] = "for"
+                slots["claws_or_drops"] = "sitting at"
+                slots["down_or_up"] = "Over"
+
             if danger:
                 slots["danger_color"] = (
                     f"Danger zone -- {actor_slot} is hanging by a thread "
@@ -313,6 +336,10 @@ class Narrator:
         else:
             slots["danger_color"] = ""
             slots["danger_clause"] = ""
+            slots["direction_prep"] = ""
+            slots["against_or_for"] = ""
+            slots["claws_or_drops"] = ""
+            slots["down_or_up"] = ""
 
         # --- land-drop context ---------------------------------------------
         land_count = self._land_count(state, seat)

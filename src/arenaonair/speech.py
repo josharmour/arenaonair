@@ -29,6 +29,14 @@ SALIENCE_LOW = 1
 SALIENCE_HIGH = 2
 SALIENCE_MUST_SPEAK = 3
 
+#: Event kinds exempt from play-by-play tempo pruning.
+PRESERVED_KINDS = frozenset({
+    "match_start",
+    "match_end",
+    "game_start",
+    "game_end",
+})
+
 DEFAULT_CHAINS: dict[str, tuple[str, ...]] = {
     "windows": ("kokoro", "sapi"),
     "darwin": ("kokoro", "say"),
@@ -103,6 +111,37 @@ class SpeechQueue:
             self._uids = {u.uid for u in survivors}
             self._flushed_matches.add(match_id)
             return removed
+
+    def prune_plays(self, match_id: str | None = None) -> int:
+        """Fast-tempo / play-boundary discipline: drop un-spoken play-by-play speech.
+
+        Leaves boundary events (match_start/end, game_start/end) intact.
+        Returns the number of dropped utterances.
+        """
+        with self._lock:
+            target_match = match_id if match_id is not None else self._active_match
+            survivors = []
+            removed = 0
+            for u in self._items:
+                if (target_match is None or u.match_id == target_match) and u.kind not in PRESERVED_KINDS:
+                    removed += 1
+                else:
+                    survivors.append(u)
+            if removed > 0:
+                self._items = survivors
+                self._uids = {u.uid for u in survivors}
+            return removed
+
+    def play_count(self, match_id: str | None = None) -> int:
+        """Return the count of pending play-by-play utterances."""
+        with self._lock:
+            target_match = match_id if match_id is not None else self._active_match
+            return sum(
+                1 for u in self._items
+                if (target_match is None or u.match_id == target_match)
+                and u.kind not in PRESERVED_KINDS
+                and not self._is_stale_locked(u)
+            )
 
     # -- consumption ------------------------------------------------------
 

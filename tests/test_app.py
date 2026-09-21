@@ -261,5 +261,125 @@ class TestPrintingSpeaker:
         speaker.shutdown()
 
 
+# ---------------------------------------------------------------------------
+# Fast-tempo and play pruning in app pipeline
+# ---------------------------------------------------------------------------
+
+class TestFastTempoAndQueuePruning:
+    def test_game_end_purges_pending_play_backlog(self):
+        from arenaonair.models import Event, GameState, MatchMeta, TurnInfo, Utterance
+        from arenaonair.events import GAME_END, CAST
+
+        buf = io.StringIO()
+        speaker = PrintingSpeaker(stream=buf)
+        cfg = Config(verbosity="balanced")
+        application = ArenaOnAirApp(cfg, dry_run=True)
+        application.speaker = speaker
+        from arenaonair.speech import SpeechPump
+        application.pump = SpeechPump(queue=application.queue, speaker=speaker)
+        application._match_id = "test-match"
+        application.queue.set_active_match("test-match")
+
+        # Simulate an un-spoken play sitting in queue
+        old_play = Utterance(
+            uid="old-1",
+            match_id="test-match",
+            kind=CAST,
+            text="Old cast sentence",
+            salience=1,
+            ts_created=10.0,
+        )
+        application.queue.enqueue(old_play)
+        assert len(application.queue) == 1
+
+        # Now game_end event arrives
+        end_event = Event(
+            kind=GAME_END,
+            seat=None,
+            payload={"reason": "loss"},
+            ts=20.0,
+            salience=3,
+        )
+        meta = MatchMeta(match_id="test-match", format_name="Standard")
+        snap = GameState(
+            snapshot_id=99,
+            prev_snapshot_id=98,
+            zones={},
+            objects={},
+            players={},
+            turn_info=TurnInfo(turn_number=5, active_player=1, phase="main1"),
+            match_meta=meta,
+            local_seat=1,
+        )
+
+        import threading
+        import time
+
+        def deliver_once():
+            time.sleep(0.02)
+            application.pump.run_once()
+
+        worker = threading.Thread(target=deliver_once)
+        worker.start()
+        try:
+            application._handle_event(end_event, snap)
+
+            # The old play must have been purged before game_end delivered
+            delivered = buf.getvalue()
+            assert "Old cast sentence" not in delivered
+            closer_frags = _pool_fragments("game_end")
+            assert any(any(f in ln for f in closer_frags) for ln in delivered.splitlines())
+        finally:
+            worker.join(timeout=1.0)
+
+    def test_live_subsequent_play_prunes_unspoken_play(self, monkeypatch):
+        from arenaonair.models import Event, GameState, MatchMeta, TurnInfo, Utterance
+        from arenaonair.events import CAST
+
+        cfg = Config(verbosity="balanced")
+        application = ArenaOnAirApp(cfg, dry_run=True, once_mode=False)
+        application._match_id = "test-match"
+        application.queue.set_active_match("test-match")
+
+        old_play = Utterance(
+            uid="old-1",
+            match_id="test-match",
+            kind=CAST,
+            text="Old cast sentence",
+            salience=1,
+            ts_created=10.0,
+        )
+        application.queue.enqueue(old_play)
+        assert len(application.queue) == 1
+
+        meta = MatchMeta(match_id="test-match", format_name="Standard")
+        snap = GameState(
+            snapshot_id=101,
+            prev_snapshot_id=100,
+            zones={},
+            objects={},
+            players={},
+            turn_info=TurnInfo(turn_number=6, active_player=1, phase="main1"),
+            match_meta=meta,
+            local_seat=1,
+        )
+
+        class _FakeEvent:
+            kind = "cast"
+            salience = 2
+            seat = 1
+            ts = 15.0
+            payload = {"name": "Counterspell"}
+
+        monkeypatch.setattr("arenaonair.app.parse_line_all", lambda *args: [object()])
+        application.builder.apply = lambda *args: snap
+        application._events_for = lambda *args: [_FakeEvent()]
+        application._feed_line(None, [], 15.0, "fake line")
+
+        # The old unspoken play was pruned
+        assert not any(u.uid == "old-1" for u in application.queue._items)
+
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))
