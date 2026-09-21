@@ -1,4 +1,4 @@
-# MTGA Announcer — Product Requirements Document
+# ArenaOnAir — Product Requirements Document
 
 **Version:** 0.1 (draft)
 **Date:** 2026-09-19

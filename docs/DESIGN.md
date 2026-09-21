@@ -1,4 +1,4 @@
-# MTGA Announcer — Design Document
+# ArenaOnAir — Design Document
 
 **Version:** 0.1 (draft)
 **Date:** 2026-09-19
@@ -142,7 +142,7 @@ this module; an optional `LLMGlosser` implementing the same interface is a post-
 
 ### 3.7 `app.py` — wiring + minimal UI
 
-Single entrypoint (`python -m mtga_announcer` or console script). Status surface: tray icon or
+Single entrypoint (`python -m arenaonair` or console script). Status surface: tray icon or
 tiny window with state label (watching / in-match / speaking / error), mute toggle, verbosity
 selector. PySide6 only if a window is wanted; v1 can ship CLI + tray to keep deps minimal.
 
@@ -156,7 +156,7 @@ selector. PySide6 only if a window is wanted; v1 can ship CLI + tray to keep dep
 
 ## 5. Configuration
 
-Single TOML file (`~/.mtga-announcer/config.toml`): log path override, verbosity default,
+Single TOML file (`~/.arenaonair/config.toml`): log path override, verbosity default,
 TTS engine preference, cooldown tuning. No settings database.
 
 ## 6. Reliability contract (the anti-mtgacoach-debt section)
@@ -186,7 +186,7 @@ These are hard requirements with named tests:
 
 - Python ≥ 3.10, stdlib-first.
 - Deps: `watchdog` (log tailing), TTS engine(s) as available; PySide6 optional for UI.
-- Packaging: single package `src/mtga_announcer/`, pyproject/hatchling, console script entry.
+- Packaging: single package `src/arenaonair/`, pyproject/hatchling, console script entry.
 - No MCP server, no LLM client, no BepInEx component in v1.
 
 ## 9. Build order (implementation waves)
