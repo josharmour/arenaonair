@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "arenaonair"
+version = "0.1.0"
+description = "Play-by-play radio-style narration for MTG Arena matches. Announcer, never coach."
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = []
+
+[project.optional-dependencies]
+watchdog = ["watchdog>=4"]
+ui = ["PySide6>=6.6"]
+dev = ["pytest>=8", "pytest-timeout>=2"]
+
+[project.scripts]
+arenaonair = "arenaonair.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/arenaonair"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
