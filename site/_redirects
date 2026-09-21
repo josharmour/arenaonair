@@ -1,0 +1,4 @@
+# Cloudflare Pages Redirects
+https://arena-on-air.com/* https://arenaonair.com/:splat 301!
+https://www.arena-on-air.com/* https://arenaonair.com/:splat 301!
+https://www.arenaonair.com/* https://arenaonair.com/:splat 301!
