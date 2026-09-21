@@ -7,8 +7,11 @@ no real MTGA installation.
 from __future__ import annotations
 
 import os
+import sys
 import time
 from pathlib import Path
+
+import pytest
 
 from arenaonair.watcher import LogWatcher
 
@@ -167,6 +170,10 @@ class TestRotationAndTruncation:
         _write(log, "brand new\n")
         assert _texts(w.poll()) == ["brand new"]
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows file locking prevents replacing files while held open",
+    )
     def test_inode_swap_rotation_with_prev_sibling(self, tmp_path):
         log = tmp_path / "Player.log"
         prev = tmp_path / "Player-prev.log"
@@ -178,6 +185,10 @@ class TestRotationAndTruncation:
         got = w.poll() + w.poll()
         assert _texts(got) == ["gen2 a"], got
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows file locking prevents replacing files while held open",
+    )
     def test_inode_swap_without_sibling_resets_to_zero(self, tmp_path):
         log = tmp_path / "Player.log"
         log.write_text("first generation\n" * 5)
@@ -202,6 +213,10 @@ class TestRotationAndTruncation:
         got = w.poll() + w.poll()
         assert _texts(got) == ["a"], got
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows file locking prevents replacing files while held open",
+    )
     def test_rotation_replays_new_generation_even_when_anchored(self, tmp_path):
         log = tmp_path / "Player.log"
         body = [f"noise {i}" for i in range(60)]

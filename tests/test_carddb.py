@@ -106,7 +106,7 @@ class TestDbAbsent:
 
     def test_default_path_constant_outside_repo(self) -> None:
         assert str(DEFAULT_DB_PATH).startswith(str(Path.home()))
-        assert "arenaonair/cards.sqlite" in str(DEFAULT_DB_PATH)
+        assert "arenaonair/cards.sqlite" in DEFAULT_DB_PATH.as_posix()
 
 
 class TestCounts:
