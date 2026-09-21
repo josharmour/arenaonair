@@ -3,18 +3,18 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ArenaOnAir — Live Play-by-Play Radio for Magic Arena</title>
-  <meta name="description" content="Turn silent MTG Arena matches into an electrifying radio sports broadcast. Zero cloud lag, sub-millisecond log tailing, dynamic tempo compression, and local neural voice synthesis.">
-  <meta property="og:title" content="ArenaOnAir — Live Radio Commentary for MTG Arena">
-  <meta property="og:description" content="Turn your Magic Arena matches into an esports broadcast with zero lag and offline neural voice commentary.">
+  <title>ArenaOnAir — Live Esports Radio Commentary for MTG Arena</title>
+  <meta name="description" content="Turn silent Magic Arena matches into an electrifying live sports broadcast. Sub-millisecond log tailing, dynamic tempo adaptation, and local neural voice synthesis.">
+  <meta property="og:title" content="ArenaOnAir — Live Esports Radio for MTG Arena">
+  <meta property="og:description" content="Bring the championship caster booth to your desktop. Zero cloud lag, offline neural voice commentary.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://arenaonair.com">
   <link rel="canonical" href="https://arenaonair.com">
 
-  <!-- Typography: Authentic Broadcast & Industrial Telemetry -->
+  <!-- Typography: Sports Telecast Condensed & Crisp Technical Monospace -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;0,900;1,700&family=Inter:wght@400;500;600&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;0,900;1,700;1,800&family=Inter:wght@400;500;600;700&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
 
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -27,28 +27,12 @@
             sans: ['Inter', 'system-ui', 'sans-serif'],
           },
           colors: {
-            chassis: {
-              950: '#080a0f',
-              900: '#0d1017',
-              850: '#121620',
-              800: '#181e2b',
-              700: '#232b3d',
-              600: '#343f56',
-              500: '#4a5775',
-            },
-            amber: {
-              glow: '#ffb703',
-              dim: '#996e00',
-            },
-            onair: {
-              red: '#ff3344',
-              glow: 'rgba(255, 51, 68, 0.7)',
-              dim: '#4a1217',
-            },
-            signal: {
-              green: '#10b981',
-              amber: '#f59e0b',
-              red: '#ef4444',
+            brand: {
+              red: '#dc2626',
+              darkred: '#991b1b',
+              amber: '#d97706',
+              blue: '#0284c7',
+              slate: '#0f172a',
             }
           }
         }
@@ -57,16 +41,11 @@
   </script>
   <style>
     :root {
-      color-scheme: dark;
+      color-scheme: light;
     }
     body {
-      background-color: #090c12;
-      background-image: 
-        radial-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 1px),
-        linear-gradient(to bottom, rgba(9, 12, 18, 0.6) 0%, rgba(9, 12, 18, 1) 100%);
-      background-size: 20px 20px, 100% 100%;
-      background-attachment: fixed;
-      color: #e2e8f0;
+      background-color: #ffffff;
+      color: #1e293b;
       font-feature-settings: "cv02", "cv03", "cv04", "cv11";
     }
 
@@ -78,455 +57,395 @@
     }
 
     /* Studio On-Air Sign */
-    .on-air-box {
-      border: 2px solid #2d3748;
-      box-shadow: inset 0 2px 4px rgba(0,0,0,0.8), 0 2px 10px rgba(0,0,0,0.5);
-      transition: all 0.25s ease-in-out;
+    .on-air-lamp {
+      background: #f1f5f9;
+      border: 2px solid #cbd5e1;
+      transition: all 0.2s ease-in-out;
     }
-    .on-air-box.active {
-      border-color: #ff3344;
-      background: linear-gradient(180deg, #380a0f 0%, #1a0507 100%);
-      box-shadow: 
-        0 0 35px rgba(255, 51, 68, 0.45),
-        inset 0 0 15px rgba(255, 51, 68, 0.3);
+    .on-air-lamp.active {
+      background: #dc2626;
+      border-color: #b91c1c;
+      box-shadow: 0 0 20px rgba(220, 38, 38, 0.5), inset 0 0 8px rgba(255, 255, 255, 0.4);
     }
-    .on-air-text {
-      color: #552025;
-      text-shadow: none;
-      transition: all 0.25s ease-in-out;
+    .on-air-lamp .lamp-text {
+      color: #94a3b8;
+      transition: color 0.2s ease-in-out;
     }
-    .on-air-box.active .on-air-text {
+    .on-air-lamp.active .lamp-text {
       color: #ffffff;
-      text-shadow: 
-        0 0 10px #ff3344,
-        0 0 22px #ff3344,
-        0 0 38px rgba(255, 51, 68, 0.8);
+      text-shadow: 0 0 8px rgba(255, 255, 255, 0.8);
     }
 
-    /* Studio Chassis Hardware Panel */
-    .chassis-panel {
-      background: linear-gradient(180deg, #131722 0%, #0d1017 100%);
-      border: 1px solid #232b3d;
-      box-shadow: 
-        0 20px 40px -15px rgba(0, 0, 0, 0.7),
-        inset 0 1px 0 rgba(255, 255, 255, 0.08);
-    }
-
-    /* Screws & Rack Accents */
-    .rack-screw {
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-      background: #1e2533;
-      border: 1px solid #323d52;
-      position: relative;
-    }
-    .rack-screw::before {
-      content: '';
-      position: absolute;
-      top: 3px;
-      left: 1px;
-      width: 6px;
-      height: 1px;
-      background: #4a5775;
-      transform: rotate(45deg);
-    }
-
-    /* Segmented LED VU Meter */
+    /* Segmented LED Peak VU Meter */
     .vu-segment {
-      height: 4px;
+      height: 6px;
       border-radius: 1px;
-      opacity: 0.18;
+      background-color: #cbd5e1;
+      opacity: 0.35;
       transition: opacity 0.08s ease, background-color 0.08s ease;
     }
     .vu-segment.lit-green {
-      background-color: #10b981;
+      background-color: #16a34a;
       opacity: 1;
-      box-shadow: 0 0 6px rgba(16, 185, 129, 0.8);
+      box-shadow: 0 0 4px rgba(22, 163, 74, 0.6);
     }
     .vu-segment.lit-amber {
-      background-color: #f59e0b;
+      background-color: #ea580c;
       opacity: 1;
-      box-shadow: 0 0 6px rgba(245, 158, 11, 0.8);
+      box-shadow: 0 0 4px rgba(234, 88, 12, 0.6);
     }
     .vu-segment.lit-red {
-      background-color: #ef4444;
+      background-color: #dc2626;
       opacity: 1;
-      box-shadow: 0 0 8px rgba(239, 68, 68, 0.9);
+      box-shadow: 0 0 6px rgba(220, 38, 38, 0.8);
     }
 
-    /* CRT/Teleprompter Scanline Texture */
-    .teleprompter-crt {
-      background: #07090e;
-      background-image: linear-gradient(rgba(18, 24, 38, 0.3) 50%, rgba(0, 0, 0, 0.4) 50%);
-      background-size: 100% 4px;
+    /* Crisp Card Borders */
+    .editorial-card {
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.04), 0 1px 2px -1px rgba(0, 0, 0, 0.02);
+      transition: box-shadow 0.2s ease, border-color 0.2s ease;
+    }
+    .editorial-card:hover {
+      box-shadow: 0 12px 28px -5px rgba(0, 0, 0, 0.06), 0 8px 10px -6px rgba(0, 0, 0, 0.03);
+      border-color: #cbd5e1;
     }
 
-    /* Custom Scrollbar for Terminal / Feed */
-    ::-webkit-scrollbar {
-      width: 6px;
-      height: 6px;
-    }
-    ::-webkit-scrollbar-track {
-      background: #090c12;
-    }
-    ::-webkit-scrollbar-thumb {
-      background: #232b3d;
-      border-radius: 3px;
-    }
-    ::-webkit-scrollbar-thumb:hover {
-      background: #343f56;
+    /* Seamless Vector Blend */
+    .vector-blend {
+      mix-blend-mode: multiply;
     }
   </style>
 </head>
-<body class="min-h-screen flex flex-col font-sans selection:bg-amber-500 selection:text-black">
+<body class="min-h-screen flex flex-col font-sans selection:bg-red-600 selection:text-white bg-white">
 
-  <!-- Top Broadcast Header / Station Telemetry -->
-  <div class="border-b border-chassis-700 bg-chassis-950/90 backdrop-blur-md px-4 py-1.5 text-[11px] font-mono tracking-wider flex items-center justify-between text-gray-400">
-    <div class="flex items-center space-x-4">
-      <span class="inline-flex items-center gap-1.5 text-signal-green font-bold">
-        <span class="w-2 h-2 rounded-full bg-signal-green animate-pulse"></span>
-        FREQUENCY 94.7 FM
-      </span>
-      <span class="hidden sm:inline text-chassis-600">|</span>
-      <span class="hidden sm:inline text-gray-400">CALLSIGN: <span class="text-white">AOA-RADIO</span></span>
-      <span class="hidden md:inline text-chassis-600">|</span>
-      <span class="hidden md:inline text-gray-400">PROTOCOL: <span class="text-amber-glow font-bold">MTGA-DIRECT-V1</span></span>
-    </div>
-    <div class="flex items-center space-x-4">
-      <span class="text-gray-400 font-mono">LATENCY: <strong class="text-white">&lt;1ms</strong></span>
-      <span class="text-chassis-600">|</span>
-      <a href="https://github.com/josharmour/arenaonair" target="_blank" rel="noopener noreferrer" class="text-gray-300 hover:text-white transition flex items-center gap-1">
-        <span>GH/ARENAONAIR</span>
-        <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
-      </a>
+  <!-- Station Frequency Banner -->
+  <div class="bg-slate-100 text-slate-600 px-4 py-1.5 text-[11px] font-mono tracking-wider border-b border-slate-200">
+    <div class="max-w-7xl mx-auto flex items-center justify-between">
+      <div class="flex items-center space-x-4">
+        <span class="inline-flex items-center gap-1.5 text-emerald-700 font-bold">
+          <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+          FREQUENCY 94.7 FM
+        </span>
+        <span class="hidden sm:inline text-slate-300">|</span>
+        <span class="hidden sm:inline">CALLSIGN: <strong class="text-slate-900">W-AOA ARENA RADIO</strong></span>
+        <span class="hidden md:inline text-slate-300">|</span>
+        <span class="hidden md:inline">MTGA LOG ENGINE: <strong class="text-emerald-700">ONLINE (200Hz)</strong></span>
+      </div>
+      <div class="flex items-center space-x-4">
+        <span class="hidden sm:inline">QUEUE DELAY: <strong class="text-slate-900">0.00 MS</strong></span>
+        <span class="hidden sm:inline text-slate-300">|</span>
+        <a href="https://github.com/josharmour/arenaonair" target="_blank" rel="noopener noreferrer" class="text-slate-700 hover:text-slate-900 transition flex items-center gap-1.5 font-bold">
+          <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+          <span>GITHUB</span>
+        </a>
+      </div>
     </div>
   </div>
 
-  <!-- Primary Studio Navigation -->
-  <header class="border-b border-chassis-700 bg-chassis-900/80 backdrop-blur-md sticky top-0 z-50">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-18 flex items-center justify-between">
-      <div class="flex items-center space-x-4">
-        <!-- Logo Emblem -->
-        <a href="#" class="flex items-center space-x-3 group">
-          <div class="w-10 h-10 rounded bg-chassis-800 border border-chassis-600 flex items-center justify-center text-amber-glow font-headline font-black text-2xl tracking-tighter shadow-inner group-hover:border-amber-glow/60 transition">
-            AoA
+  <!-- Primary Header -->
+  <header class="bg-white/95 backdrop-blur-md border-b border-slate-200 sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
+      
+      <!-- Brand Logo -->
+      <a href="#" class="flex items-center space-x-3.5 group">
+        <div class="w-10 h-10 rounded-lg bg-red-600 text-white font-headline font-black text-2xl flex items-center justify-center shadow-md shadow-red-500/20 group-hover:bg-red-700 transition">
+          AoA
+        </div>
+        <div>
+          <div class="font-headline font-black text-2xl tracking-tight text-slate-900 uppercase leading-none">
+            ARENA<span class="text-red-600">ONAIR</span>
           </div>
-          <div>
-            <div class="font-headline font-extrabold text-2xl tracking-tight text-white uppercase leading-none">
-              ARENA<span class="text-amber-glow">ONAIR</span>
-            </div>
-            <div class="font-mono text-[10px] text-gray-400 tracking-widest uppercase">
-              Pro Tour Radio Caster
-            </div>
+          <div class="font-mono text-[10px] text-slate-500 tracking-widest uppercase mt-0.5">
+            Esports Radio Broadcast
           </div>
-        </a>
-      </div>
+        </div>
+      </a>
 
-      <!-- Studio Masthead "ON AIR" Box in Navbar -->
-      <div class="flex items-center space-x-6">
-        <div id="nav-onair" class="on-air-box px-3.5 py-1 rounded bg-chassis-950 flex items-center space-x-2 cursor-pointer select-none" title="Click to test ON AIR lamp">
-          <span class="w-2 h-2 rounded-full bg-onair-dim"></span>
-          <span class="on-air-text font-headline font-black text-lg tracking-wider uppercase leading-none">ON AIR</span>
+      <!-- Navigation & On-Air Indicator -->
+      <div class="flex items-center space-x-6 sm:space-x-8">
+        
+        <!-- Interactive "ON AIR" Tally Sign -->
+        <div id="header-onair" class="on-air-lamp px-3.5 py-1 rounded-md cursor-pointer select-none flex items-center space-x-2" title="Click to test ON AIR lamp">
+          <span class="w-2.5 h-2.5 rounded-full bg-slate-400"></span>
+          <span class="lamp-text font-headline font-black text-lg tracking-wider uppercase leading-none">ON AIR</span>
         </div>
 
-        <nav class="hidden md:flex items-center space-x-6 text-xs font-mono font-medium uppercase tracking-wider text-gray-300">
-          <a href="#console" class="hover:text-amber-glow transition">Caster Console</a>
-          <a href="#architecture" class="hover:text-amber-glow transition">Engine Schematics</a>
-          <a href="#quickstart" class="hover:text-amber-glow transition">Terminal Setup</a>
+        <nav class="hidden md:flex items-center space-x-6 text-xs font-mono font-bold uppercase tracking-wider text-slate-600">
+          <a href="#console" class="hover:text-red-600 transition">Caster Desk</a>
+          <a href="#cyber-athletics" class="hover:text-red-600 transition">Cyber Athletics</a>
+          <a href="#quickstart" class="hover:text-red-600 transition">Setup</a>
         </nav>
 
-        <a href="#quickstart" class="hidden sm:inline-flex items-center gap-2 px-3.5 py-2 rounded bg-chassis-800 hover:bg-chassis-700 border border-chassis-600 text-white font-mono text-xs font-bold transition uppercase tracking-wider">
-          <span>Run Local v0.1</span>
-          <span class="text-amber-glow">&rarr;</span>
+        <a href="#quickstart" class="hidden sm:inline-flex items-center gap-2 px-4 py-2 rounded-md bg-slate-900 hover:bg-slate-800 text-white font-mono text-xs font-bold transition uppercase tracking-wider shadow-sm">
+          <span>Run Local</span>
+          <span class="text-red-400">&rarr;</span>
         </a>
       </div>
+
     </div>
   </header>
 
   <main class="flex-grow">
     
-    <!-- Hero / Headline Section -->
-    <section class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-14 pb-10">
-      <div class="grid grid-cols-1 lg:grid-cols-12 gap-10 items-end border-b border-chassis-700 pb-12">
-        <div class="lg:col-span-8">
-          <div class="inline-flex items-center gap-2 px-2.5 py-1 rounded bg-chassis-800 border border-chassis-700 font-mono text-[11px] text-gray-300 mb-6 uppercase tracking-wider">
-            <span class="w-1.5 h-1.5 rounded-full bg-signal-green"></span>
-            Zero Cloud Latency &bull; 100% Local Neural Audio
+    <!-- Hero Section: Clean White Canvas with Overlayed Vector Artwork -->
+    <section class="bg-white pt-10 pb-16 border-b border-slate-100 overflow-hidden">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 items-center">
+          
+          <!-- Left: Editorial Typography & Actions -->
+          <div class="lg:col-span-6 space-y-6">
+            
+            <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-red-50 border border-red-200 text-red-700 font-mono text-xs font-bold uppercase tracking-wider">
+              <span class="w-2 h-2 rounded-full bg-red-600 animate-pulse"></span>
+              Live MTG Arena Announcer Engine
+            </div>
+
+            <h1 class="font-headline font-black text-5xl sm:text-7xl xl:text-8xl tracking-tight text-slate-900 uppercase leading-[0.92]">
+              PLAY-BY-PLAY RADIO FOR <span class="text-red-600">MAGIC ARENA</span>.
+            </h1>
+
+            <p class="text-base sm:text-lg text-slate-600 leading-relaxed max-w-xl font-normal">
+              Turn quiet, solitary ladder games into a championship sports telecast. ArenaOnAir tails your MTG Arena game log directly off disk at 200Hz, dynamically regulates commentary cadence during fast attacks, and narrates matches live with offline neural voice synthesis.
+            </p>
+
+            <!-- CTA Actions -->
+            <div class="flex flex-wrap items-center gap-4 pt-2 font-mono text-xs font-bold uppercase tracking-wider">
+              <a href="#console" class="px-6 py-3.5 rounded-md bg-red-600 hover:bg-red-700 text-white shadow-md shadow-red-600/20 transition flex items-center gap-2">
+                <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                <span>Try Caster Soundboard</span>
+              </a>
+              <a href="#quickstart" class="px-6 py-3.5 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-800 transition flex items-center gap-2">
+                <span>View Quickstart</span>
+                <span class="text-slate-500">&rarr;</span>
+              </a>
+            </div>
+
+            <!-- Sports Spec Badges -->
+            <div class="pt-6 border-t border-slate-100 grid grid-cols-3 gap-6 font-mono text-xs">
+              <div>
+                <div class="text-2xl font-headline font-black text-slate-900">0.00ms</div>
+                <div class="text-slate-500 uppercase text-[10px] tracking-wider mt-0.5">Polling Lag</div>
+              </div>
+              <div>
+                <div class="text-2xl font-headline font-black text-red-600">100% LOCAL</div>
+                <div class="text-slate-500 uppercase text-[10px] tracking-wider mt-0.5">Offline Neural TTS</div>
+              </div>
+              <div>
+                <div class="text-2xl font-headline font-black text-slate-900">20,000+</div>
+                <div class="text-slate-500 uppercase text-[10px] tracking-wider mt-0.5">Card Database</div>
+              </div>
+            </div>
+
           </div>
-          <h1 class="font-headline font-black text-5xl sm:text-7xl lg:text-8xl tracking-tight text-white uppercase leading-[0.92]">
-            LIVE PLAY-BY-PLAY RADIO FOR <span class="text-amber-glow">MAGIC ARENA</span>.
-          </h1>
-          <p class="mt-6 text-base sm:text-lg text-gray-300 max-w-2xl leading-relaxed">
-            Turn quiet, solitary ladder matches into an electrifying broadcast sports telecast. ArenaOnAir tails your MTGA game log directly off disk at 200Hz, dynamically compresses play-by-play tempo during fast combat swings, and speaks live with neural voice synthesis.
-          </p>
-          <div class="mt-8 flex flex-wrap items-center gap-4 font-mono text-xs font-bold uppercase tracking-wider">
-            <a href="#console" class="px-5 py-3 rounded bg-amber-glow hover:bg-amber-400 text-black shadow-lg shadow-amber-500/20 transition flex items-center gap-2">
-              <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-              <span>Test Caster Console</span>
-            </a>
-            <a href="#quickstart" class="px-5 py-3 rounded bg-chassis-800 hover:bg-chassis-700 border border-chassis-600 text-white transition flex items-center gap-2">
-              <span>Install Daemon</span>
-              <span class="text-gray-400 font-normal">($ pip install)</span>
-            </a>
+
+          <!-- Right: Vector Graphic Seamlessly Overlayed on White Background -->
+          <div class="lg:col-span-6 flex justify-center items-center">
+            <div class="relative w-full max-w-xl">
+              <!-- Vector illustration on solid white background -->
+              <img 
+                src="images/vector-caster.jpg" 
+                alt="Modern vector illustration of an esports announcer at a broadcast desk with microphone, ON AIR sign, and floating MTG card overlays on pure white background"
+                class="w-full h-auto object-contain vector-blend select-none"
+                loading="eager"
+                fetchpriority="high"
+                width="1920"
+                height="1080"
+              >
+            </div>
           </div>
+
         </div>
 
-        <!-- Telemetry Spec Card -->
-        <div class="lg:col-span-4 flex flex-col justify-end">
-          <div class="p-5 rounded bg-chassis-900 border border-chassis-700 font-mono text-xs space-y-3">
-            <div class="flex items-center justify-between border-b border-chassis-800 pb-2">
-              <span class="text-gray-400">ENGINE SPEC</span>
-              <span class="text-amber-glow font-bold">AoA-REV-2026</span>
-            </div>
-            <div class="flex items-center justify-between text-gray-300">
-              <span class="text-gray-500">Log Polling Delay</span>
-              <span class="text-white font-bold">0.00 ms (Zero-block)</span>
-            </div>
-            <div class="flex items-center justify-between text-gray-300">
-              <span class="text-gray-500">Voice Synthesis</span>
-              <span class="text-white">Kokoro 82M Neural TTS</span>
-            </div>
-            <div class="flex items-center justify-between text-gray-300">
-              <span class="text-gray-500">Repetition Defense</span>
-              <span class="text-white">QR6 8-Utterance Window</span>
-            </div>
-            <div class="flex items-center justify-between text-gray-300">
-              <span class="text-gray-500">Card Database</span>
-              <span class="text-white">20,000+ GrpId Cache</span>
-            </div>
-            <div class="flex items-center justify-between text-gray-300">
-              <span class="text-gray-500">Cloud Requirement</span>
-              <span class="text-signal-green font-bold">None (Air-Gapped)</span>
-            </div>
-          </div>
-        </div>
       </div>
     </section>
 
-    <!-- Interactive Broadcast Console (Centerpiece) -->
-    <section id="console" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+    <!-- Interactive Caster Desk & Soundboard (Light Styled) -->
+    <section id="console" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
       
-      <!-- Console Housing Frame -->
-      <div class="chassis-panel rounded-lg p-6 lg:p-8 relative">
+      <div class="border-b border-slate-200 pb-4 mb-10 flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+        <div>
+          <span class="font-mono text-xs text-red-600 font-bold uppercase tracking-wider">LIVE STUDIO CONSOLE</span>
+          <h2 class="font-headline font-black text-4xl sm:text-5xl text-slate-900 uppercase tracking-tight">
+            TEST THE BROADCAST SOUNDBOARD
+          </h2>
+        </div>
+        <p class="text-sm text-slate-500 max-w-md">
+          Click any call below to hear real match commentary synthesized live and watch the dual-channel LED peak VU meters respond.
+        </p>
+      </div>
+
+      <!-- Studio Console Frame -->
+      <div class="editorial-card rounded-2xl p-6 sm:p-8 bg-white space-y-8">
         
-        <!-- Chassis Header & Rack Screws -->
-        <div class="flex items-center justify-between border-b border-chassis-700 pb-4 mb-6">
-          <div class="flex items-center space-x-3">
-            <div class="rack-screw"></div>
-            <span class="font-headline font-black text-xl tracking-wider uppercase text-white">
+        <!-- Header Strip -->
+        <div class="flex items-center justify-between pb-4 border-b border-slate-200">
+          <div>
+            <div class="font-headline font-black text-2xl text-slate-900 uppercase tracking-tight">
               STUDIO DESK CONSOLE &bull; MODEL AOA-1
-            </span>
+            </div>
+            <div class="font-mono text-xs text-slate-500 mt-0.5">
+              STATUS: <span id="master-status" class="text-emerald-600 font-bold">READY TO BROADCAST</span>
+            </div>
           </div>
 
-          <!-- Master ON-AIR Light -->
-          <div class="flex items-center space-x-3">
-            <div id="master-onair" class="on-air-box px-4 py-1.5 rounded bg-chassis-950 flex items-center space-x-2">
-              <span class="w-2.5 h-2.5 rounded-full bg-onair-dim"></span>
-              <span class="on-air-text font-headline font-black text-xl tracking-widest uppercase leading-none">ON AIR</span>
-            </div>
-            <div class="rack-screw"></div>
+          <!-- Large Console ON AIR Lamp -->
+          <div id="desk-onair" class="on-air-lamp px-4 py-1.5 rounded cursor-pointer flex items-center space-x-2">
+            <span class="w-2.5 h-2.5 rounded-full bg-slate-400"></span>
+            <span class="lamp-text font-headline font-black text-xl tracking-widest uppercase leading-none">ON AIR</span>
           </div>
         </div>
 
-        <!-- Main Console Grid: Teleprompter (Left) + Audio Channel Strip (Right) -->
-        <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+        <!-- VU Meter & Soundboard Strip -->
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
           
-          <!-- Left: Game State Teleprompter / Live MTGA Feed -->
-          <div class="lg:col-span-7 flex flex-col space-y-3">
-            <div class="flex items-center justify-between font-mono text-xs text-gray-400">
-              <span class="flex items-center gap-2">
-                <span class="w-2 h-2 rounded-full bg-signal-green"></span>
-                LIVE MTGA LOG TELEPROMPTER
-              </span>
-              <span id="teleprompter-state" class="text-amber-glow font-bold">MONITORING</span>
-            </div>
-
-            <!-- CRT Screen Container -->
-            <div class="teleprompter-crt rounded border border-chassis-700 p-4 font-mono text-xs text-gray-300 h-80 overflow-y-auto space-y-2 shadow-inner" id="teleprompter-feed">
-              <div class="text-gray-500 font-mono text-[11px] border-b border-chassis-800 pb-1">
-                // SYSTEM HOOK: /AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log (Inode 8912304)
-              </div>
-              <div class="text-gray-400">
-                [10:14:02.120] GRE_TO_CLIENT: MatchCreated (Format: Historic Brawl)
-              </div>
-              <div class="text-gray-400">
-                [10:14:03.450] ANNOUNCER: <span class="text-white font-bold">"Two pilots strap in tonight — armour facing down Sparky. We're underway in Brawl!"</span>
-              </div>
-              <div class="text-gray-400">
-                [10:14:18.910] GRE_TO_CLIENT: DieRollResults (Armour: 18, Sparky: 12) -> Priority: Armour
-              </div>
-              <div class="text-gray-400">
-                [10:15:02.340] CARD_RESOLVE: Veteran Survivor (GrpId 89144) -> Battlefield
-              </div>
-              <div class="text-signal-green font-bold">
-                [10:15:44.820] COMBAT: Attacks Declared -> 10 Damage unblocked to Player(Sparky)
-              </div>
-              <div class="text-amber-glow">
-                [10:15:45.010] ANNOUNCER: <span class="text-white font-bold">"Veteran Survivor does the dirty work! Armour's assault connects for ten, Sparky drops to two."</span>
-              </div>
-              <div class="text-gray-500 italic">
-                ... awaiting next game turn resolution ...
-              </div>
-            </div>
-
-            <!-- Prompter Controls -->
-            <div class="flex items-center justify-between text-[11px] font-mono text-gray-400 pt-1">
-              <span>Auto-scroll: <strong class="text-white">LOCKED</strong></span>
-              <span>Diff Engine: <strong class="text-signal-green">SYNCED</strong></span>
-            </div>
-          </div>
-
-          <!-- Right: Audio Soundboard & Dual VU Peak Meter -->
-          <div class="lg:col-span-5 flex flex-col justify-between space-y-6 bg-chassis-950/60 p-5 rounded border border-chassis-700">
+          <!-- Left: VU Meters & Cadence Control -->
+          <div class="lg:col-span-5 bg-slate-50 p-5 rounded-xl border border-slate-200 space-y-6">
             
-            <!-- Dual LED VU Peak Meters -->
-            <div>
-              <div class="flex items-center justify-between font-mono text-xs text-gray-400 mb-2">
-                <span>PEAK LEVEL METERS</span>
-                <span class="text-[10px] text-gray-500 font-mono">CH-L / CH-R &bull; dBFs</span>
+            <!-- Dual LED VU Peak Level Meters -->
+            <div class="space-y-3">
+              <div class="flex items-center justify-between font-mono text-xs text-slate-600">
+                <span class="font-bold">DUAL-CHANNEL PEAK VU METER</span>
+                <span class="text-[10px] text-slate-400">CH-L / CH-R</span>
               </div>
 
-              <!-- Meter Display -->
-              <div class="p-3 bg-chassis-950 rounded border border-chassis-800 space-y-2">
+              <div class="p-3 bg-white rounded-lg border border-slate-200 space-y-2">
                 <!-- Channel L -->
                 <div class="flex items-center space-x-2">
-                  <span class="font-mono text-[10px] text-gray-400 w-4">L</span>
+                  <span class="font-mono text-[11px] text-slate-500 w-4 font-bold">L</span>
                   <div class="flex-grow grid grid-cols-12 gap-1" id="vu-channel-l">
-                    <!-- 12 segments: 7 green, 3 amber, 2 red -->
-                    <div class="vu-segment bg-signal-green" data-lvl="1"></div>
-                    <div class="vu-segment bg-signal-green" data-lvl="2"></div>
-                    <div class="vu-segment bg-signal-green" data-lvl="3"></div>
-                    <div class="vu-segment bg-signal-green" data-lvl="4"></div>
-                    <div class="vu-segment bg-signal-green" data-lvl="5"></div>
-                    <div class="vu-segment bg-signal-green" data-lvl="6"></div>
-                    <div class="vu-segment bg-signal-green" data-lvl="7"></div>
-                    <div class="vu-segment bg-signal-amber" data-lvl="8"></div>
-                    <div class="vu-segment bg-signal-amber" data-lvl="9"></div>
-                    <div class="vu-segment bg-signal-amber" data-lvl="10"></div>
-                    <div class="vu-segment bg-signal-red" data-lvl="11"></div>
-                    <div class="vu-segment bg-signal-red" data-lvl="12"></div>
+                    <div class="vu-segment" data-lvl="1"></div>
+                    <div class="vu-segment" data-lvl="2"></div>
+                    <div class="vu-segment" data-lvl="3"></div>
+                    <div class="vu-segment" data-lvl="4"></div>
+                    <div class="vu-segment" data-lvl="5"></div>
+                    <div class="vu-segment" data-lvl="6"></div>
+                    <div class="vu-segment" data-lvl="7"></div>
+                    <div class="vu-segment" data-lvl="8"></div>
+                    <div class="vu-segment" data-lvl="9"></div>
+                    <div class="vu-segment" data-lvl="10"></div>
+                    <div class="vu-segment" data-lvl="11"></div>
+                    <div class="vu-segment" data-lvl="12"></div>
                   </div>
                 </div>
 
                 <!-- Channel R -->
                 <div class="flex items-center space-x-2">
-                  <span class="font-mono text-[10px] text-gray-400 w-4">R</span>
+                  <span class="font-mono text-[11px] text-slate-500 w-4 font-bold">R</span>
                   <div class="flex-grow grid grid-cols-12 gap-1" id="vu-channel-r">
-                    <div class="vu-segment bg-signal-green" data-lvl="1"></div>
-                    <div class="vu-segment bg-signal-green" data-lvl="2"></div>
-                    <div class="vu-segment bg-signal-green" data-lvl="3"></div>
-                    <div class="vu-segment bg-signal-green" data-lvl="4"></div>
-                    <div class="vu-segment bg-signal-green" data-lvl="5"></div>
-                    <div class="vu-segment bg-signal-green" data-lvl="6"></div>
-                    <div class="vu-segment bg-signal-green" data-lvl="7"></div>
-                    <div class="vu-segment bg-signal-amber" data-lvl="8"></div>
-                    <div class="vu-segment bg-signal-amber" data-lvl="9"></div>
-                    <div class="vu-segment bg-signal-amber" data-lvl="10"></div>
-                    <div class="vu-segment bg-signal-red" data-lvl="11"></div>
-                    <div class="vu-segment bg-signal-red" data-lvl="12"></div>
+                    <div class="vu-segment" data-lvl="1"></div>
+                    <div class="vu-segment" data-lvl="2"></div>
+                    <div class="vu-segment" data-lvl="3"></div>
+                    <div class="vu-segment" data-lvl="4"></div>
+                    <div class="vu-segment" data-lvl="5"></div>
+                    <div class="vu-segment" data-lvl="6"></div>
+                    <div class="vu-segment" data-lvl="7"></div>
+                    <div class="vu-segment" data-lvl="8"></div>
+                    <div class="vu-segment" data-lvl="9"></div>
+                    <div class="vu-segment" data-lvl="10"></div>
+                    <div class="vu-segment" data-lvl="11"></div>
+                    <div class="vu-segment" data-lvl="12"></div>
                   </div>
                 </div>
 
-                <!-- Scale Labels -->
-                <div class="flex justify-between text-[9px] font-mono text-gray-500 px-6 pt-1">
+                <div class="flex justify-between text-[9px] font-mono text-slate-400 px-6 pt-0.5">
                   <span>-24</span>
                   <span>-18</span>
                   <span>-12</span>
                   <span>-6</span>
                   <span>-3</span>
-                  <span class="text-signal-red font-bold">0dB</span>
+                  <span class="text-red-600 font-bold">0dB</span>
                 </div>
               </div>
             </div>
 
-            <!-- Soundboard Track Triggers -->
-            <div>
-              <div class="font-mono text-xs text-gray-400 mb-2 flex items-center justify-between">
-                <span>CASTER SOUNDBOARD (CLICK TO BROADCAST)</span>
-                <span id="speech-status" class="text-amber-glow font-bold text-[11px]">READY</span>
+            <!-- Cadence Slider & Controls -->
+            <div class="space-y-2 pt-2 border-t border-slate-200">
+              <div class="flex items-center justify-between text-xs font-mono">
+                <span class="text-slate-600 font-bold">CADENCE FADER:</span>
+                <span id="tempo-display" class="font-bold text-slate-900 bg-white px-2 py-0.5 rounded border border-slate-200">1.0x</span>
               </div>
-
-              <div class="space-y-2" id="soundboard-buttons">
-                
-                <!-- Track 1 -->
-                <button class="soundboard-btn w-full text-left p-3 rounded bg-chassis-900 hover:bg-chassis-800 border border-chassis-700 hover:border-amber-glow/60 transition group flex items-center justify-between"
-                  data-call="Two pilots strap in tonight — armour facing down Sparky. We're underway in Brawl!"
-                  data-event="[10:14:03] ANNOUNCER: Match Opener (Brawl)">
-                  <div class="flex items-center space-x-3">
-                    <span class="w-6 h-6 rounded bg-chassis-800 text-amber-glow group-hover:bg-amber-glow group-hover:text-black font-mono text-xs font-bold flex items-center justify-center transition">
-                      1
-                    </span>
-                    <div>
-                      <div class="font-headline font-bold text-sm text-white uppercase tracking-wide">Match Opener / Introductions</div>
-                      <div class="text-[11px] text-gray-400 italic">"Two pilots strap in tonight — armour facing down Sparky..."</div>
-                    </div>
-                  </div>
-                  <span class="text-[10px] font-mono text-gray-500 group-hover:text-amber-glow transition uppercase">PLAY &rarr;</span>
-                </button>
-
-                <!-- Track 2 -->
-                <button class="soundboard-btn w-full text-left p-3 rounded bg-chassis-900 hover:bg-chassis-800 border border-chassis-700 hover:border-amber-glow/60 transition group flex items-center justify-between"
-                  data-call="Veteran Survivor does the dirty work! Armour's assault connects for ten, Sparky drops to two."
-                  data-event="[10:15:45] ANNOUNCER: Combat Swing (10 Damage, Sparky to 2)">
-                  <div class="flex items-center space-x-3">
-                    <span class="w-6 h-6 rounded bg-chassis-800 text-amber-glow group-hover:bg-amber-glow group-hover:text-black font-mono text-xs font-bold flex items-center justify-center transition">
-                      2
-                    </span>
-                    <div>
-                      <div class="font-headline font-bold text-sm text-white uppercase tracking-wide">Heavy Combat Connects</div>
-                      <div class="text-[11px] text-gray-400 italic">"Veteran Survivor does the dirty work! Armour's assault connects..."</div>
-                    </div>
-                  </div>
-                  <span class="text-[10px] font-mono text-gray-500 group-hover:text-amber-glow transition uppercase">PLAY &rarr;</span>
-                </button>
-
-                <!-- Track 3 -->
-                <button class="soundboard-btn w-full text-left p-3 rounded bg-chassis-900 hover:bg-chassis-800 border border-chassis-700 hover:border-amber-glow/60 transition group flex items-center justify-between"
-                  data-call="Sheltered by Ghosts. Resolves. Armour swings for lethal."
-                  data-event="[10:17:12] ANNOUNCER: High-Tempo Lethal Burst (Pruned Routine Filler)">
-                  <div class="flex items-center space-x-3">
-                    <span class="w-6 h-6 rounded bg-chassis-800 text-amber-glow group-hover:bg-amber-glow group-hover:text-black font-mono text-xs font-bold flex items-center justify-center transition">
-                      3
-                    </span>
-                    <div>
-                      <div class="font-headline font-bold text-sm text-white uppercase tracking-wide">Fast-Tempo Lethal Burst</div>
-                      <div class="text-[11px] text-gray-400 italic">"Sheltered by Ghosts. Resolves. Armour swings for lethal."</div>
-                    </div>
-                  </div>
-                  <span class="text-[10px] font-mono text-gray-500 group-hover:text-amber-glow transition uppercase">PLAY &rarr;</span>
-                </button>
-
-                <!-- Track 4 -->
-                <button class="soundboard-btn w-full text-left p-3 rounded bg-chassis-900 hover:bg-chassis-800 border border-chassis-700 hover:border-amber-glow/60 transition group flex items-center justify-between"
-                  data-call="Wrath of God sweeps the board clean! All six creatures down, resetting the battlefield."
-                  data-event="[10:19:04] ANNOUNCER: Board Wipe Resolution (6 Creatures Destroyed)">
-                  <div class="flex items-center space-x-3">
-                    <span class="w-6 h-6 rounded bg-chassis-800 text-amber-glow group-hover:bg-amber-glow group-hover:text-black font-mono text-xs font-bold flex items-center justify-center transition">
-                      4
-                    </span>
-                    <div>
-                      <div class="font-headline font-bold text-sm text-white uppercase tracking-wide">Board Wipe Resolution</div>
-                      <div class="text-[11px] text-gray-400 italic">"Wrath of God sweeps the board clean! All six creatures down..."</div>
-                    </div>
-                  </div>
-                  <span class="text-[10px] font-mono text-gray-500 group-hover:text-amber-glow transition uppercase">PLAY &rarr;</span>
-                </button>
-
+              <input type="range" id="tempo-slider" min="0.8" max="1.5" step="0.1" value="1.0" class="w-full accent-red-600 cursor-pointer">
+              <div class="flex justify-between text-[10px] font-mono text-slate-400">
+                <span>0.8x (Deliberate)</span>
+                <span>1.0x (Standard)</span>
+                <span>1.5x (Fast Attack)</span>
               </div>
             </div>
 
-            <!-- Fader / Speech Rate Control Strip -->
-            <div class="pt-3 border-t border-chassis-800 flex items-center justify-between text-xs font-mono">
-              <div class="flex items-center space-x-3">
-                <span class="text-gray-400">TEMPO FADER:</span>
-                <input type="range" id="rate-fader" min="0.8" max="1.5" step="0.1" value="1.0" class="w-24 accent-amber-500 cursor-pointer">
-                <span id="rate-display" class="text-amber-glow font-bold">1.0x</span>
-              </div>
-              <button id="cancel-audio" class="px-2 py-1 rounded bg-chassis-800 hover:bg-chassis-700 border border-chassis-700 text-gray-300 hover:text-white text-[10px] uppercase transition">
-                MUTE / STOP
-              </button>
+            <button id="btn-stop-audio" class="w-full py-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 font-mono text-xs font-bold transition uppercase">
+              Stop / Mute Audio
+            </button>
+
+          </div>
+
+          <!-- Right: Interactive Caster Soundboard Buttons -->
+          <div class="lg:col-span-7 space-y-3">
+            <div class="font-mono text-xs text-slate-500 font-bold uppercase tracking-wider mb-2">
+              SELECT A MATCH SITUATION:
             </div>
+
+            <!-- Call 1 -->
+            <button class="soundboard-btn w-full text-left p-4 rounded-xl border border-slate-200 hover:border-red-500 bg-slate-50/50 hover:bg-red-50/30 transition group flex items-center justify-between"
+              data-call="Two pilots strap in tonight — armour facing down Sparky. We're underway in Brawl!">
+              <div class="flex items-center space-x-4">
+                <div class="w-9 h-9 rounded-lg bg-white border border-slate-200 text-slate-800 group-hover:bg-red-600 group-hover:text-white group-hover:border-red-600 font-mono text-xs font-bold flex items-center justify-center transition shadow-sm">
+                  1
+                </div>
+                <div>
+                  <div class="font-headline font-bold text-lg text-slate-900 uppercase tracking-wide">Match Opener / Introductions</div>
+                  <div class="text-xs text-slate-500 italic">"Two pilots strap in tonight — armour facing down Sparky. We're underway in Brawl!"</div>
+                </div>
+              </div>
+              <span class="font-mono text-xs font-bold text-red-600 group-hover:translate-x-1 transition uppercase">PLAY &rarr;</span>
+            </button>
+
+            <!-- Call 2 -->
+            <button class="soundboard-btn w-full text-left p-4 rounded-xl border border-slate-200 hover:border-red-500 bg-slate-50/50 hover:bg-red-50/30 transition group flex items-center justify-between"
+              data-call="Veteran Survivor does the dirty work! Armour's assault connects for ten, Sparky drops to two.">
+              <div class="flex items-center space-x-4">
+                <div class="w-9 h-9 rounded-lg bg-white border border-slate-200 text-slate-800 group-hover:bg-red-600 group-hover:text-white group-hover:border-red-600 font-mono text-xs font-bold flex items-center justify-center transition shadow-sm">
+                  2
+                </div>
+                <div>
+                  <div class="font-headline font-bold text-lg text-slate-900 uppercase tracking-wide">Heavy Combat Damage Connects</div>
+                  <div class="text-xs text-slate-500 italic">"Veteran Survivor does the dirty work! Armour's assault connects for ten..."</div>
+                </div>
+              </div>
+              <span class="font-mono text-xs font-bold text-red-600 group-hover:translate-x-1 transition uppercase">PLAY &rarr;</span>
+            </button>
+
+            <!-- Call 3 -->
+            <button class="soundboard-btn w-full text-left p-4 rounded-xl border border-slate-200 hover:border-red-500 bg-slate-50/50 hover:bg-red-50/30 transition group flex items-center justify-between"
+              data-call="Sheltered by Ghosts. Resolves. Armour swings for lethal.">
+              <div class="flex items-center space-x-4">
+                <div class="w-9 h-9 rounded-lg bg-white border border-slate-200 text-slate-800 group-hover:bg-red-600 group-hover:text-white group-hover:border-red-600 font-mono text-xs font-bold flex items-center justify-center transition shadow-sm">
+                  3
+                </div>
+                <div>
+                  <div class="font-headline font-bold text-lg text-slate-900 uppercase tracking-wide">High-Tempo Lethal Burst (Pruned Filler)</div>
+                  <div class="text-xs text-slate-500 italic">"Sheltered by Ghosts. Resolves. Armour swings for lethal."</div>
+                </div>
+              </div>
+              <span class="font-mono text-xs font-bold text-red-600 group-hover:translate-x-1 transition uppercase">PLAY &rarr;</span>
+            </button>
+
+            <!-- Call 4 -->
+            <button class="soundboard-btn w-full text-left p-4 rounded-xl border border-slate-200 hover:border-red-500 bg-slate-50/50 hover:bg-red-50/30 transition group flex items-center justify-between"
+              data-call="Wrath of God sweeps the board clean! All six creatures down, resetting the battlefield.">
+              <div class="flex items-center space-x-4">
+                <div class="w-9 h-9 rounded-lg bg-white border border-slate-200 text-slate-800 group-hover:bg-red-600 group-hover:text-white group-hover:border-red-600 font-mono text-xs font-bold flex items-center justify-center transition shadow-sm">
+                  4
+                </div>
+                <div>
+                  <div class="font-headline font-bold text-lg text-slate-900 uppercase tracking-wide">Board Wipe Resolution</div>
+                  <div class="text-xs text-slate-500 italic">"Wrath of God sweeps the board clean! All six creatures down..."</div>
+                </div>
+              </div>
+              <span class="font-mono text-xs font-bold text-red-600 group-hover:translate-x-1 transition uppercase">PLAY &rarr;</span>
+            </button>
 
           </div>
 
@@ -535,171 +454,164 @@
       </div>
     </section>
 
-    <!-- Technical Architecture Schematics -->
-    <section id="architecture" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
-      
-      <div class="border-b border-chassis-700 pb-4 mb-10 flex flex-col sm:flex-row sm:items-end justify-between gap-2">
-        <div>
-          <span class="font-mono text-xs text-amber-glow uppercase tracking-wider">ENGINEERING SPECIFICATIONS</span>
-          <h2 class="font-headline font-black text-4xl sm:text-5xl text-white uppercase tracking-tight">
-            BUILT FOR ZERO LAG & RIGID INTEGRITY
-          </h2>
-        </div>
-        <div class="font-mono text-xs text-gray-500">
-          DOCUMENT: AoA-ARCH-2026.09
-        </div>
-      </div>
-
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+    <!-- Cyber Athletics Competition: Clean White Background with Battle Illustration -->
+    <section id="cyber-athletics" class="bg-slate-50 py-20 border-t border-b border-slate-200">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         
-        <!-- Schematic 1 -->
-        <div class="p-6 rounded bg-chassis-900 border border-chassis-700 space-y-4">
-          <div class="flex items-center justify-between font-mono text-xs border-b border-chassis-800 pb-3">
-            <span class="text-white font-bold flex items-center gap-2">
-              <span class="w-2 h-2 rounded-full bg-signal-green"></span>
-              MODULE 01 &bull; 0ms INODE TAILER
-            </span>
-            <span class="text-gray-500 font-mono">watcher.py</span>
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-12 items-center mb-16">
+          
+          <!-- Left: Vector Illustration on White -->
+          <div class="lg:col-span-6 flex justify-center">
+            <div class="relative w-full max-w-lg bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+              <img 
+                src="images/vector-battle.jpg" 
+                alt="Clean isometric vector illustration of an esports card game tournament battle station with spell cards clashing on a white background"
+                class="w-full h-auto object-contain vector-blend select-none"
+                loading="lazy"
+                width="1920"
+                height="1080"
+              >
+            </div>
           </div>
-          <h3 class="font-headline font-bold text-2xl text-white uppercase tracking-wide">
-            Direct File-Descriptor Polling Without Memory Injection
-          </h3>
-          <p class="text-sm text-gray-300 leading-relaxed">
-            ArenaOnAir does not attach debuggers, inject DLLs, or read process memory. It tails MTGA's native diagnostic log (<code>Player.log</code>) using persistent OS file handles with sub-millisecond polling and automatic log rotation handling across game client relaunches.
-          </p>
-          <div class="p-3 bg-chassis-950 rounded border border-chassis-800 font-mono text-xs text-gray-400 space-y-1">
-            <div>&bull; Startup anchor seeking scans backward for active match traffic.</div>
-            <div>&bull; Survives client restart and file inode swaps cleanly.</div>
-            <div>&bull; Zero network socket interception or packet tampering.</div>
+
+          <!-- Right: Architecture Intro -->
+          <div class="lg:col-span-6 space-y-6">
+            <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 border border-blue-200 text-blue-700 font-mono text-xs font-bold uppercase tracking-wider">
+              <span>Cyber Athletics Platform</span>
+            </div>
+
+            <h2 class="font-headline font-black text-4xl sm:text-5xl uppercase tracking-tight text-slate-900 leading-none">
+              EVERY LADDER MATCH DESERVES A CHAMPIONSHIP CALL.
+            </h2>
+
+            <p class="text-slate-600 leading-relaxed text-base font-normal">
+              Whether you're testing an experimental combo in Best-of-One or grinding top 250 Mythic on ladder, ArenaOnAir elevates quiet card games into the intensity of a live stadium broadcast.
+            </p>
+
+            <div class="p-4 rounded-xl bg-white border border-slate-200 text-xs font-mono text-slate-600 space-y-2">
+              <div class="flex items-center gap-2 text-slate-900 font-bold">
+                <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+                <span>ZERO MEMORY HOOKS &bull; ZERO PACKET TAMPERING</span>
+              </div>
+              <p class="font-sans text-slate-500">
+                Built strictly on Wizards of the Coast's official diagnostic log interface. Clean, safe, and completely air-gapped from external cloud services.
+              </p>
+            </div>
           </div>
+
         </div>
 
-        <!-- Schematic 2 -->
-        <div class="p-6 rounded bg-chassis-900 border border-chassis-700 space-y-4">
-          <div class="flex items-center justify-between font-mono text-xs border-b border-chassis-800 pb-3">
-            <span class="text-white font-bold flex items-center gap-2">
-              <span class="w-2 h-2 rounded-full bg-signal-amber"></span>
-              MODULE 02 &bull; DYNAMIC TEMPO ADAPTATION
-            </span>
-            <span class="text-gray-500 font-mono">tempo.py</span>
+        <!-- 4 Architectural Modules (Clean White Card Grid) -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          
+          <!-- Module 1 -->
+          <div class="bg-white rounded-xl p-6 border border-slate-200 shadow-sm space-y-3">
+            <div class="w-10 h-10 rounded-lg bg-emerald-50 text-emerald-700 font-mono text-sm font-bold flex items-center justify-center border border-emerald-200">
+              01
+            </div>
+            <h3 class="font-headline font-bold text-xl uppercase text-slate-900">0ms Inode Tailer</h3>
+            <p class="text-xs text-slate-600 leading-relaxed">
+              Directly polls MTGA's diagnostic <code>Player.log</code> via open file descriptors. Survives client restarts, inode swaps, and truncations without memory injection.
+            </p>
           </div>
-          <h3 class="font-headline font-bold text-2xl text-white uppercase tracking-wide">
-            Real-Time Phrase Compression & Backlog Pruning
-          </h3>
-          <p class="text-sm text-gray-300 leading-relaxed">
-            Fast games make fixed-rate speech unbearable. When players pass priority rapidly or drop multiple spells in one turn, ArenaOnAir senses the high tempo: it prunes stale un-spoken backlogs, elevates only high-salience decisions, and switches to punchy short-form broadcast bursts.
-          </p>
-          <div class="p-3 bg-chassis-950 rounded border border-chassis-800 font-mono text-xs text-gray-400 space-y-1">
-            <div>&bull; Drops non-essential routine filler when game actions spike.</div>
-            <div>&bull; Preserves critical combat swings and lethal turn declarations.</div>
-            <div>&bull; Automatically resumes broadcast cadence when play slows down.</div>
-          </div>
-        </div>
 
-        <!-- Schematic 3 -->
-        <div class="p-6 rounded bg-chassis-900 border border-chassis-700 space-y-4">
-          <div class="flex items-center justify-between font-mono text-xs border-b border-chassis-800 pb-3">
-            <span class="text-white font-bold flex items-center gap-2">
-              <span class="w-2 h-2 rounded-full bg-onair-red"></span>
-              MODULE 03 &bull; QR6 ANTI-DRONE VARIETY
-            </span>
-            <span class="text-gray-500 font-mono">antidrone.py</span>
+          <!-- Module 2 -->
+          <div class="bg-white rounded-xl p-6 border border-slate-200 shadow-sm space-y-3">
+            <div class="w-10 h-10 rounded-lg bg-amber-50 text-amber-700 font-mono text-sm font-bold flex items-center justify-center border border-amber-200">
+              02
+            </div>
+            <h3 class="font-headline font-bold text-xl uppercase text-slate-900">Dynamic Tempo</h3>
+            <p class="text-xs text-slate-600 leading-relaxed">
+              Fast game tempo automatically prunes un-spoken backlogs, shifts to punchy short-form phrases, and silences low-salience routine filler to prevent lag.
+            </p>
           </div>
-          <h3 class="font-headline font-bold text-2xl text-white uppercase tracking-wide">
-            8-Utterance Memory Corpus Eliminates Robotic Monotony
-          </h3>
-          <p class="text-sm text-gray-300 leading-relaxed">
-            Repeated phrases ruin immersion. The QR6 variety engine enforces structural diversity across an 8-utterance sliding window, alternating between player leads, card leads, tactical impacts, and colloquial caster color commentary.
-          </p>
-          <div class="p-3 bg-chassis-950 rounded border border-chassis-800 font-mono text-xs text-gray-400 space-y-1">
-            <div>&bull; Verified with automated drone scoring tests (target = 0).</div>
-            <div>&bull; Incorporates MTG slang, combat verbs, and layman glosses.</div>
-            <div>&bull; Tailored to match the energy of professional tournament casting.</div>
-          </div>
-        </div>
 
-        <!-- Schematic 4 -->
-        <div class="p-6 rounded bg-chassis-900 border border-chassis-700 space-y-4">
-          <div class="flex items-center justify-between font-mono text-xs border-b border-chassis-800 pb-3">
-            <span class="text-white font-bold flex items-center gap-2">
-              <span class="w-2 h-2 rounded-full bg-blue-400"></span>
-              MODULE 04 &bull; LOCAL NEURAL TTS OR ZERO-DEP
-            </span>
-            <span class="text-gray-500 font-mono">tts.py</span>
+          <!-- Module 3 -->
+          <div class="bg-white rounded-xl p-6 border border-slate-200 shadow-sm space-y-3">
+            <div class="w-10 h-10 rounded-lg bg-red-50 text-red-700 font-mono text-sm font-bold flex items-center justify-center border border-red-200">
+              03
+            </div>
+            <h3 class="font-headline font-bold text-xl uppercase text-slate-900">QR6 Anti-Drone</h3>
+            <p class="text-xs text-slate-600 leading-relaxed">
+              Guaranteed variety. An 8-utterance sliding window enforces syntactic shifts between actor leads, card leads, and combat glosses to eliminate robotic monotony.
+            </p>
           </div>
-          <h3 class="font-headline font-bold text-2xl text-white uppercase tracking-wide">
-            Runs Completely Offline Without Cloud API Costs
-          </h3>
-          <p class="text-sm text-gray-300 leading-relaxed">
-            Zero telemetry sent to third-party cloud servers. Powered natively by Kokoro 82M neural TTS for broadcast-grade quality on modern hardware, with seamless zero-dependency fallback to macOS <code>say</code>, Windows SAPI, or Linux Piper/eSpeak.
-          </p>
-          <div class="p-3 bg-chassis-950 rounded border border-chassis-800 font-mono text-xs text-gray-400 space-y-1">
-            <div>&bull; No OpenAI or ElevenLabs API keys or monthly subscriptions.</div>
-            <div>&bull; Completely private: runs entirely on your local machine.</div>
-            <div>&bull; Instant voice playback with zero internet streaming lag.</div>
+
+          <!-- Module 4 -->
+          <div class="bg-white rounded-xl p-6 border border-slate-200 shadow-sm space-y-3">
+            <div class="w-10 h-10 rounded-lg bg-sky-50 text-sky-700 font-mono text-sm font-bold flex items-center justify-center border border-sky-200">
+              04
+            </div>
+            <h3 class="font-headline font-bold text-xl uppercase text-slate-900">100% Offline TTS</h3>
+            <p class="text-xs text-slate-600 leading-relaxed">
+              Powered locally by Kokoro 82M neural TTS or zero-dependency OS fallbacks (macOS <code>say</code>, Windows SAPI, Linux Piper). No subscriptions or API keys.
+            </p>
           </div>
+
         </div>
 
       </div>
     </section>
 
-    <!-- Terminal & Installation Manual -->
-    <section id="quickstart" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
+    <!-- Terminal & Installation Quickstart -->
+    <section id="quickstart" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 bg-white">
       
-      <div class="chassis-panel rounded-lg p-6 lg:p-8">
+      <div class="editorial-card rounded-2xl p-6 sm:p-10 bg-white">
         
-        <div class="flex items-center justify-between border-b border-chassis-700 pb-4 mb-6">
-          <div class="flex items-center space-x-3">
-            <div class="rack-screw"></div>
-            <span class="font-headline font-black text-xl tracking-wider uppercase text-white">
-              RUNNING ARENAONAIR LOCALLY
-            </span>
+        <div class="border-b border-slate-200 pb-6 mb-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <span class="font-mono text-xs text-red-600 font-bold uppercase tracking-wider">LOCAL RUNTIME INSTALLATION</span>
+            <h2 class="font-headline font-black text-3xl sm:text-4xl text-slate-900 uppercase mt-1">
+              RUN ARENAONAIR ON YOUR MACHINE
+            </h2>
           </div>
-          <span class="font-mono text-xs text-gray-500">PYTHON &gt;= 3.10 REQUIRED</span>
+          <span class="font-mono text-xs text-slate-600 bg-slate-100 px-3 py-1.5 rounded-md border border-slate-200">
+            PYTHON 3.10 &ndash; 3.14 SUPPORTED
+          </span>
         </div>
 
-        <!-- Platform Tabs -->
-        <div class="flex items-center space-x-2 border-b border-chassis-800 pb-3 mb-6" id="os-selector">
-          <button class="os-tab-btn active px-3.5 py-1.5 rounded font-mono text-xs font-bold uppercase tracking-wider bg-amber-glow text-black transition" data-os="mac">
+        <!-- OS Selector Tabs -->
+        <div class="flex items-center space-x-2 border-b border-slate-200 pb-4 mb-6" id="os-selector">
+          <button class="os-tab-btn active px-4 py-2 rounded-md font-mono text-xs font-bold uppercase tracking-wider bg-slate-900 text-white transition" data-os="mac">
             macOS (Apple Silicon &amp; Intel)
           </button>
-          <button class="os-tab-btn px-3.5 py-1.5 rounded font-mono text-xs font-bold uppercase tracking-wider text-gray-400 hover:text-white transition" data-os="win">
+          <button class="os-tab-btn px-4 py-2 rounded-md font-mono text-xs font-bold uppercase tracking-wider text-slate-600 hover:text-slate-900 transition" data-os="win">
             Windows 10 / 11
           </button>
-          <button class="os-tab-btn px-3.5 py-1.5 rounded font-mono text-xs font-bold uppercase tracking-wider text-gray-400 hover:text-white transition" data-os="linux">
+          <button class="os-tab-btn px-4 py-2 rounded-md font-mono text-xs font-bold uppercase tracking-wider text-slate-600 hover:text-slate-900 transition" data-os="linux">
             Linux / Steam Deck
           </button>
         </div>
 
         <!-- Terminal Output Window -->
-        <div class="relative bg-chassis-950 rounded border border-chassis-800 p-5 font-mono text-xs text-gray-300">
+        <div class="relative bg-slate-950 rounded-xl p-6 font-mono text-xs text-slate-300 shadow-inner border border-slate-800">
           
-          <button id="copy-btn" class="absolute top-3 right-3 px-3 py-1 rounded bg-chassis-800 hover:bg-chassis-700 border border-chassis-700 text-gray-300 hover:text-white text-[11px] font-mono transition flex items-center gap-1.5">
+          <button id="copy-btn" class="absolute top-4 right-4 px-3.5 py-1.5 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-mono transition flex items-center gap-1.5">
             <svg class="w-3.5 h-3.5 fill-none stroke-current" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
             <span id="copy-label">COPY COMMANDS</span>
           </button>
 
-          <pre id="terminal-code" class="overflow-x-auto leading-relaxed"><span class="text-gray-500"># 1. Clone repository</span>
+          <pre id="terminal-code" class="overflow-x-auto leading-relaxed text-slate-200"><span class="text-slate-500"># 1. Clone repository</span>
 git clone https://github.com/josharmour/arenaonair.git
 cd arenaonair
 
-<span class="text-gray-500"># 2. Create virtual environment &amp; install with Kokoro neural voice</span>
+<span class="text-slate-500"># 2. Set up Python environment &amp; install with neural voice</span>
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]" kokoro soundfile
 
-<span class="text-gray-500"># 3. Start the live commentator daemon</span>
+<span class="text-slate-500"># 3. Launch live announcer daemon</span>
 python -m arenaonair.app</pre>
         </div>
 
-        <!-- Hardware Pre-Flight Checklist -->
-        <div class="mt-6 p-4 rounded bg-chassis-900 border border-chassis-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-xs font-mono text-gray-400">
+        <!-- MTG Arena Setup Notice -->
+        <div class="mt-6 p-4 rounded-xl bg-amber-50 border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-xs font-mono text-amber-900">
           <div class="flex items-center gap-2">
-            <span class="w-2 h-2 rounded-full bg-signal-amber"></span>
-            <span><strong>Pre-flight:</strong> In MTG Arena, ensure <strong>Detailed Logs (Plugin Support)</strong> is toggled ON under <em>Options &gt; Account</em>.</span>
+            <span class="w-2.5 h-2.5 rounded-full bg-amber-600"></span>
+            <span><strong>MTG Arena Setting:</strong> Ensure <strong>Detailed Logs (Plugin Support)</strong> is toggled ON under <em>Options &gt; Account</em>.</span>
           </div>
-          <a href="https://github.com/josharmour/arenaonair#readme" target="_blank" rel="noopener noreferrer" class="text-amber-glow hover:underline uppercase tracking-wider inline-flex items-center gap-1 font-bold">
-            Read Full Documentation &rarr;
+          <a href="https://github.com/josharmour/arenaonair#readme" target="_blank" rel="noopener noreferrer" class="text-red-700 hover:underline uppercase font-bold inline-flex items-center gap-1">
+            Setup Guide on GitHub &rarr;
           </a>
         </div>
 
@@ -708,23 +620,23 @@ python -m arenaonair.app</pre>
 
   </main>
 
-  <!-- Studio Footer -->
-  <footer class="border-t border-chassis-700 bg-chassis-950 py-10 text-xs font-mono text-gray-500">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
+  <!-- Editorial Footer -->
+  <footer class="bg-white border-t border-slate-200 py-12 text-xs font-mono text-slate-500">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-6">
       <div class="flex items-center space-x-3">
-        <span class="font-headline font-black text-lg text-white uppercase tracking-tight">ARENA<span class="text-amber-glow">ONAIR</span></span>
+        <span class="font-headline font-black text-xl text-slate-900 uppercase tracking-tight">ARENA<span class="text-red-600">ONAIR</span></span>
         <span>&bull;</span>
-        <span>BROADCAST FREQUENCY 94.7 FM</span>
+        <span>BROADCAST FREQ 94.7 FM</span>
         <span>&bull;</span>
-        <span>MIT LICENSE</span>
+        <span>OPEN SOURCE (MIT)</span>
       </div>
-      <div class="text-center sm:text-right text-gray-600">
+      <div class="text-center sm:text-right text-slate-400">
         Unofficial fan project. Magic: The Gathering Arena is a trademark of Wizards of the Coast LLC.
       </div>
     </div>
   </footer>
 
-  <!-- Interactive Studio Console Client Script -->
+  <!-- Interactive Client-side Script -->
   <script>
     (function() {
       // OS Tab Switcher
@@ -734,19 +646,19 @@ python -m arenaonair.app</pre>
       const copyLabel = document.getElementById('copy-label');
 
       const osSnippets = {
-        mac: `# 1. Clone repository\ngit clone https://github.com/josharmour/arenaonair.git\ncd arenaonair\n\n# 2. Create virtual environment & install with Kokoro neural voice\npython3 -m venv .venv\nsource .venv/bin/activate\npip install -e ".[dev]" kokoro soundfile\n\n# 3. Start the live commentator daemon\npython -m arenaonair.app`,
-        win: `# 1. Clone repository\ngit clone https://github.com/josharmour/arenaonair.git\ncd arenaonair\n\n# 2. Create virtual environment & install\npython -m venv .venv\n.venv\\Scripts\\activate\npip install -e .\n\n# 3. Start live commentator (uses Windows SAPI or Kokoro)\npython -m arenaonair.app`,
-        linux: `# 1. Clone repository\ngit clone https://github.com/josharmour/arenaonair.git\ncd arenaonair\n\n# 2. Create virtual environment & install\npython3 -m venv .venv\nsource .venv/bin/activate\npip install -e .\n\n# 3. Start live commentator (uses Piper or eSpeak)\npython -m arenaonair.app`
+        mac: `# 1. Clone repository\ngit clone https://github.com/josharmour/arenaonair.git\ncd arenaonair\n\n# 2. Set up Python environment & install with neural voice\npython3 -m venv .venv\nsource .venv/bin/activate\npip install -e ".[dev]" kokoro soundfile\n\n# 3. Launch live announcer daemon\npython -m arenaonair.app`,
+        win: `# 1. Clone repository\ngit clone https://github.com/josharmour/arenaonair.git\ncd arenaonair\n\n# 2. Set up Python environment & install\npython -m venv .venv\n.venv\\Scripts\\activate\npip install -e .\n\n# 3. Launch live announcer daemon (uses Windows SAPI or Kokoro)\npython -m arenaonair.app`,
+        linux: `# 1. Clone repository\ngit clone https://github.com/josharmour/arenaonair.git\ncd arenaonair\n\n# 2. Set up Python environment & install\npython3 -m venv .venv\nsource .venv/bin/activate\npip install -e .\n\n# 3. Launch live announcer daemon (uses Piper or eSpeak)\npython -m arenaonair.app`
       };
 
       osTabs.forEach(tab => {
         tab.addEventListener('click', () => {
           osTabs.forEach(t => {
-            t.classList.remove('active', 'bg-amber-glow', 'text-black');
-            t.classList.add('text-gray-400');
+            t.classList.remove('active', 'bg-slate-900', 'text-white');
+            t.classList.add('text-slate-600');
           });
-          tab.classList.add('active', 'bg-amber-glow', 'text-black');
-          tab.classList.remove('text-gray-400');
+          tab.classList.add('active', 'bg-slate-900', 'text-white');
+          tab.classList.remove('text-slate-600');
           const os = tab.dataset.os;
           terminalCode.textContent = osSnippets[os] || osSnippets.mac;
         });
@@ -761,16 +673,14 @@ python -m arenaonair.app</pre>
         });
       });
 
-      // Soundboard & Live VU Peak Meter Simulator
+      // Soundboard & Live Peak VU Meter
       const soundboardBtns = document.querySelectorAll('.soundboard-btn');
-      const navOnAir = document.getElementById('nav-onair');
-      const masterOnAir = document.getElementById('master-onair');
-      const speechStatus = document.getElementById('speech-status');
-      const teleprompterState = document.getElementById('teleprompter-state');
-      const teleprompterFeed = document.getElementById('teleprompter-feed');
-      const rateFader = document.getElementById('rate-fader');
-      const rateDisplay = document.getElementById('rate-display');
-      const cancelBtn = document.getElementById('cancel-audio');
+      const headerOnAir = document.getElementById('header-onair');
+      const deskOnAir = document.getElementById('desk-onair');
+      const masterStatus = document.getElementById('master-status');
+      const tempoSlider = document.getElementById('tempo-slider');
+      const tempoDisplay = document.getElementById('tempo-display');
+      const btnStopAudio = document.getElementById('btn-stop-audio');
 
       const vuSegmentsL = document.querySelectorAll('#vu-channel-l .vu-segment');
       const vuSegmentsR = document.querySelectorAll('#vu-channel-r .vu-segment');
@@ -779,22 +689,16 @@ python -m arenaonair.app</pre>
 
       function setOnAir(active) {
         if (active) {
-          navOnAir.classList.add('active');
-          masterOnAir.classList.add('active');
-          speechStatus.textContent = 'TRANSMITTING';
-          speechStatus.classList.remove('text-amber-glow');
-          speechStatus.classList.add('text-onair-red');
-          teleprompterState.textContent = 'LIVE ON AIR';
-          teleprompterState.classList.add('text-onair-red');
+          headerOnAir.classList.add('active');
+          deskOnAir.classList.add('active');
+          masterStatus.textContent = 'BROADCASTING TRANSMISSION';
+          masterStatus.className = 'text-red-600 font-bold';
           startVuMeter();
         } else {
-          navOnAir.classList.remove('active');
-          masterOnAir.classList.remove('active');
-          speechStatus.textContent = 'READY';
-          speechStatus.classList.remove('text-onair-red');
-          speechStatus.classList.add('text-amber-glow');
-          teleprompterState.textContent = 'MONITORING';
-          teleprompterState.classList.remove('text-onair-red');
+          headerOnAir.classList.remove('active');
+          deskOnAir.classList.remove('active');
+          masterStatus.textContent = 'READY TO BROADCAST';
+          masterStatus.className = 'text-emerald-600 font-bold';
           stopVuMeter();
         }
       }
@@ -802,7 +706,6 @@ python -m arenaonair.app</pre>
       function startVuMeter() {
         if (vuInterval) clearInterval(vuInterval);
         vuInterval = setInterval(() => {
-          // Animate realistic audio speech envelopes (levels 3 to 11)
           const lvlL = Math.min(12, Math.max(2, Math.floor(Math.random() * 8) + 4));
           const lvlR = Math.min(12, Math.max(2, Math.floor(Math.random() * 8) + 3));
 
@@ -837,62 +740,45 @@ python -m arenaonair.app</pre>
         vuSegmentsR.forEach(seg => seg.classList.remove('lit-green', 'lit-amber', 'lit-red'));
       }
 
-      // Tempo fader
-      rateFader.addEventListener('input', (e) => {
-        rateDisplay.textContent = parseFloat(e.target.value).toFixed(1) + 'x';
+      // Tempo slider
+      tempoSlider.addEventListener('input', (e) => {
+        tempoDisplay.textContent = parseFloat(e.target.value).toFixed(1) + 'x';
       });
 
-      // Soundboard click triggers
+      // Soundboard Buttons
       soundboardBtns.forEach(btn => {
         btn.addEventListener('click', () => {
           const callText = btn.dataset.call;
-          const eventText = btn.dataset.event;
 
-          // Append to teleprompter
-          const timeStr = new Date().toTimeString().split(' ')[0];
-          const newDiv = document.createElement('div');
-          newDiv.className = 'text-amber-glow font-bold';
-          newDiv.textContent = `[${timeStr}] BROADCAST: "${callText}"`;
-          teleprompterFeed.appendChild(newDiv);
-          teleprompterFeed.scrollTop = teleprompterFeed.scrollHeight;
-
-          // Play audio with Web Speech API
           if ('speechSynthesis' in window) {
             window.speechSynthesis.cancel();
             const utterance = new SpeechSynthesisUtterance(callText);
-            utterance.rate = parseFloat(rateFader.value) || 1.0;
+            utterance.rate = parseFloat(tempoSlider.value) || 1.0;
             utterance.pitch = 1.0;
 
-            utterance.onstart = () => {
-              setOnAir(true);
-            };
-            utterance.onend = () => {
-              setOnAir(false);
-            };
-            utterance.onerror = () => {
-              setOnAir(false);
-            };
+            utterance.onstart = () => { setOnAir(true); };
+            utterance.onend = () => { setOnAir(false); };
+            utterance.onerror = () => { setOnAir(false); };
 
             window.speechSynthesis.speak(utterance);
           } else {
-            // Fallback for environments without speech synthesis
             setOnAir(true);
             setTimeout(() => { setOnAir(false); }, 3500);
           }
         });
       });
 
-      // Manual Mute / Stop
-      cancelBtn.addEventListener('click', () => {
+      // Stop Audio
+      btnStopAudio.addEventListener('click', () => {
         if ('speechSynthesis' in window) {
           window.speechSynthesis.cancel();
         }
         setOnAir(false);
       });
 
-      // On-Air click easter egg
-      navOnAir.addEventListener('click', () => {
-        if (masterOnAir.classList.contains('active')) {
+      // Header On-Air easter egg
+      headerOnAir.addEventListener('click', () => {
+        if (deskOnAir.classList.contains('active')) {
           setOnAir(false);
         } else {
           setOnAir(true);
