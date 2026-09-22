@@ -15,12 +15,19 @@ from __future__ import annotations
 import logging
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
+from typing import Callable
 
 from .interfaces import Speaker
 from .models import DeliveryResult, Utterance
 
 logger = logging.getLogger(__name__)
+
+
+def default_now() -> float:
+    """Receiver-clock default (time.time) for reply-expiry comparisons."""
+    return time.time()
 
 # Salience scale mirrors events.py; duplicated numerically to keep speech.py
 # decoupled from the differ's constant table.
@@ -57,6 +64,11 @@ class SpeechQueue:
     Staleness is session-scoped ONLY (design principle 4): an utterance is
     stale iff its match_id differs from the currently active match, or its
     match was flushed. Turn numbers are deliberately absent from this class.
+
+    Dual-booth dialogue gating (dual-expansions.md S8.5): an utterance with
+    ``anchor_uid`` set is ineligible for delivery until its anchor records a
+    DeliveryResult(ok=True) via :meth:`note_anchor_result`. Boundary
+    announcements (PRESERVED_KINDS) are never gated.
     """
 
     def __init__(self) -> None:
@@ -65,6 +77,12 @@ class SpeechQueue:
         self._uids: set[str] = set()
         self._flushed_matches: set[str | None] = set()
         self._active_match: str | None = None
+        # anchor uid -> DeliveryResult of the most recent delivery attempt
+        self._anchor_results: dict[str, DeliveryResult] = {}
+        # Injectable clock for expiry checks (defaults to time.time; tests
+        # swap in a fake clock). Receiver-clock semantics: expires_ts values
+        # are compared against the same clock that stamped ts_created.
+        self.now_fn: Callable[[], float] = default_now
 
     # -- population -------------------------------------------------------
 
@@ -97,6 +115,77 @@ class SpeechQueue:
     def active_match(self) -> str | None:
         with self._lock:
             return self._active_match
+
+    # -- anchor gating (dual-booth) ----------------------------------------
+
+    def note_anchor_result(self, result: DeliveryResult) -> None:
+        """Record a delivery outcome for an anchor uid.
+
+        ok=True unblocks every queued reply anchored to that uid; ok=False
+        marks the anchor dead so dependent replies get dropped at pop time.
+        """
+        with self._lock:
+            self._anchor_results[result.uid] = result
+
+    def anchor_ok(self, anchor_uid: str | None) -> bool:
+        """True iff the anchor delivered successfully (or is ungated)."""
+        if not anchor_uid:
+            return True
+        with self._lock:
+            result = self._anchor_results.get(anchor_uid)
+        return bool(result is not None and result.ok)
+
+    def drop_dead_replies(self) -> int:
+        """Remove queued replies whose anchor failed/was cancelled/pruned.
+
+        Called opportunistically by the pump before each pop. Replies whose
+        anchor has NO recorded result stay queued (still waiting). Returns
+        the number removed.
+        """
+        with self._lock:
+            survivors = []
+            removed = 0
+            for u in self._items:
+                anchor_uid = getattr(u, "anchor_uid", None)
+                if anchor_uid:
+                    result = self._anchor_results.get(anchor_uid)
+                    if result is not None and not result.ok:
+                        logger.debug(
+                            "dropping analyst reply uid=%s: anchor %s "
+                            "did not deliver (%s)",
+                            u.uid, anchor_uid, result.reason or "failed",
+                        )
+                        removed += 1
+                        continue
+                survivors.append(u)
+            if removed > 0:
+                self._items = survivors
+                self._uids = {u.uid for u in survivors}
+            return removed
+
+    def forget_anchor(self, anchor_uid: str) -> bool:
+        """Drop the queued reply(ies) anchored to ``anchor_uid`` outright.
+
+        Used when the anchor itself was pruned/flushed before any delivery
+        result existed. Returns True if at least one reply was removed.
+        """
+        with self._lock:
+            survivors = []
+            removed = False
+            for u in self._items:
+                if getattr(u, "anchor_uid", None) == anchor_uid:
+                    logger.debug(
+                        "dropping orphaned analyst reply uid=%s: anchor %s "
+                        "left the queue without delivering",
+                        u.uid, anchor_uid,
+                    )
+                    removed = True
+                    continue
+                survivors.append(u)
+            if removed:
+                self._items = survivors
+                self._uids = {u.uid for u in survivors}
+            return removed
 
     def flush(self, match_id: str | None) -> int:
         """Match-end discipline: drop every queued utterance of that match.
@@ -167,6 +256,15 @@ class SpeechQueue:
                 and not self._is_stale_locked(u)
             )
 
+    def pending(self) -> list[Utterance]:
+        """Snapshot of queued utterances in storage order (read-only).
+
+        Includes gated/stale items — callers filter further as needed. Used
+        by the pump's pacing logic to detect queued dialogue replies.
+        """
+        with self._lock:
+            return list(self._items)
+
     # -- consumption ------------------------------------------------------
 
     def pop_best(self) -> Utterance | None:
@@ -215,7 +313,29 @@ class SpeechQueue:
     def _is_stale_locked(self, u: Utterance) -> bool:
         if u.match_id in self._flushed_matches:
             return True
-        return u.match_id != self._active_match
+        if u.match_id != self._active_match:
+            return True
+        # Reply-expiry: an overdue dependent reply silently ages out. Boundary
+        # announcements (PRESERVED_KINDS) are NEVER dropped by this logic.
+        expires = getattr(u, "expires_ts", None)
+        if expires is not None and u.kind not in PRESERVED_KINDS:
+            try:
+                if self.now_fn() > float(expires):
+                    logger.debug(
+                        "utterance uid=%s expired (expires_ts=%.3f); "
+                        "ineligible for delivery",
+                        u.uid, float(expires),
+                    )
+                    return True
+            except (TypeError, ValueError):
+                pass
+        # Anchor gating: a dependent reply waits until its anchor delivered ok.
+        anchor_uid = getattr(u, "anchor_uid", None)
+        if anchor_uid and u.kind not in PRESERVED_KINDS:
+            result = self._anchor_results.get(anchor_uid)
+            if result is None or not result.ok:
+                return True
+        return False
 
 
 # --------------------------------------------------------------------------
@@ -233,6 +353,13 @@ class SpeechPump:
     Preemption: while a lower-salience utterance is mid-speak, a MUST_SPEAK
     arrival cancels the in-flight synthesis (when the speaker supports it)
     and delivers the new one immediately.
+
+    Dual-booth dialogue (dual-expansions.md S8.5): dependent replies
+    (anchor_uid set) are only popped once their anchor recorded ok; failed/
+    cancelled anchors cause the reply to be dropped at DEBUG. Co-caster
+    handoff pacing: after an anchor whose reply is queued, the next gap uses
+    ``handoff_gap_s`` (tight, 0.180s default); unrelated plays breathe at
+    ``play_gap_min_s``..``play_gap_max_s``.
     """
 
     queue: SpeechQueue
@@ -241,10 +368,22 @@ class SpeechPump:
     lock: threading.Lock = field(default_factory=threading.Lock)
     stopped: bool = False
 
+    # -- co-caster pacing knobs (D3) ----------------------------------------
+    #: Tight gap between an anchor and its queued analyst reply (seconds).
+    handoff_gap_s: float = 0.18
+    #: Breathing-room bounds between unrelated distinct plays (seconds);
+    #: consumed by :meth:`next_gap_s` and enforced in the delivery loop when
+    #: ``enforce_play_gaps`` is on (default off preserves the historical
+    #: pump timing; upstream cadence logic remains the breathing-room owner).
+    play_gap_min_s: float = 0.8
+    play_gap_max_s: float = 1.5
+    enforce_play_gaps: bool = False
+
     # -- public API -------------------------------------------------------
 
     def run_once(self) -> DeliveryResult | None:
         """One dequeue→speak→confirm cycle. Returns the result or None."""
+        self.queue.drop_dead_replies()
         utt = self.queue.pop_best()
         if utt is None:
             return None
@@ -268,6 +407,45 @@ class SpeechPump:
         self.record(result, utt)
         return result
 
+    def _has_queued_reply_for(self, anchor_uid: str | None) -> bool:
+        if not anchor_uid:
+            return False
+        return any(getattr(u, "anchor_uid", None) == anchor_uid
+                   for u in self.queue.pending())
+
+    def next_gap_s(self, just_delivered: Utterance | None = None) -> float:
+        """Gap to observe before the NEXT delivery (D3 pacing).
+
+        - Anchor whose dialogue reply is still queued -> tight co-caster
+          handoff (``handoff_gap_s``).
+        - Otherwise unrelated distinct plays breathe within
+          ``play_gap_min_s``..``play_gap_max_s`` (urgency of the pending
+          backlog pulls the gap toward the minimum bound).
+        """
+        if just_delivered is not None \
+                and self._has_queued_reply_for(getattr(just_delivered, "uid", None)):
+            return self.handoff_gap_s
+        pending = self.queue.pending()
+        if pending:
+            top_salience = max(
+                int(getattr(u, "salience", 0) or 0) for u in pending)
+            span = max(0.0, self.play_gap_max_s - self.play_gap_min_s)
+            urgency = max(0.0, min(1.0, top_salience / 3.0))
+            return self.play_gap_max_s - span * urgency
+        return self.play_gap_min_s
+
+    def wait_gap(self, gap_s: float) -> None:
+        """Sleep ``gap_s`` seconds honoring an injectable clock when present."""
+        if gap_s <= 0:
+            return
+        clock = getattr(self.queue, "now_fn", None)
+        if clock is not None:
+            target = clock() + gap_s
+            while clock() < target and not self.stopped:
+                time.sleep(min(0.005, max(0.001, target - clock())))
+            return
+        time.sleep(gap_s)
+
     def preempt_if_idle_with(self, utt: Utterance) -> DeliveryResult | None:
         """Preemption entry point for a MUST_SPEAK arrival.
 
@@ -289,12 +467,20 @@ class SpeechPump:
 
     def run_forever(self, poll_interval: float = 0.05) -> None:
         """Thread body; run_once in a loop until stop()."""
-        import time
-
         while not self.stopped:
             spoke = self.run_once()
             if spoke is None:
                 time.sleep(poll_interval)
+                continue
+            # D3 pacing: co-caster handoff after an anchor with a queued
+            # reply is ALWAYS tight; unrelated play gaps only when enabled
+            # (default off keeps historical pump timing for cadence tests).
+            just_utt = spoke_utt_of(self, spoke)
+            if just_utt is not None \
+                    and self._has_queued_reply_for(getattr(just_utt, "uid", None)):
+                self.wait_gap(self.handoff_gap_s)
+            elif self.enforce_play_gaps:
+                self.wait_gap(self.next_gap_s(just_utt))
 
     def stop(self) -> None:
         self.stopped = True
@@ -305,6 +491,13 @@ class SpeechPump:
         """Confirm delivery; loud WARNING on any failure (never silent)."""
         with self.lock:
             self.results.append(result)
+            ledger = getattr(self, "_last_utt_by_uid", None)
+            if ledger is None:
+                ledger = {}
+                self._last_utt_by_uid = ledger
+            ledger[result.uid] = utt
+        # Anchor bookkeeping: unblock (or doom) dependent replies.
+        self.queue.note_anchor_result(result)
         if not result.ok:
             logger.warning(
                 "speech delivery FAILED uid=%s kind=%s reason=%s text=%r",
@@ -313,6 +506,20 @@ class SpeechPump:
                 result.reason or "(no reason given)",
                 utt.text,
             )
+
+
+def spoke_utt_of(pump: "SpeechPump", result: DeliveryResult) -> Utterance | None:
+    """Recover the utterance just delivered from the pump's uid ledger."""
+    ledger = getattr(pump, "_last_utt_by_uid", {})
+    return ledger.get(result.uid)
+
+
+def pending_dialogue_reply(queue: SpeechQueue, anchor_uid: str | None) -> bool:
+    """True iff a queued reply anchored to ``anchor_uid`` still waits."""
+    if not anchor_uid:
+        return False
+    return any(getattr(u, "anchor_uid", None) == anchor_uid
+               for u in queue.pending())
 
 
 # --------------------------------------------------------------------------
@@ -440,7 +647,14 @@ class EngineSpeaker:
         self.engine = engine
 
     def speak(self, utterance: Utterance) -> DeliveryResult:
-        return self.engine.speak(utterance)
+        # Dual-booth: a per-utterance voice override must reach the engine
+        # even when the engine lacks a per-call voice parameter — temporarily
+        # stamp the engine default, then restore.
+        override = getattr(utterance, "voice", None)
+        if not override:
+            return self.engine.speak(utterance)
+        with _engine_voice_override(self.engine, override):
+            return self.engine.speak(utterance)
 
     def set_voice(self, voice: str) -> None:
         if hasattr(self.engine, "set_voice"):
@@ -453,6 +667,44 @@ class EngineSpeaker:
 
     def shutdown(self) -> None:
         self.engine.shutdown()
+
+
+class _engine_voice_override:
+    """Context manager: temporarily stamp ``voice`` as an engine's default.
+
+    Engines that accept a per-call voice kwarg already honor ``utt.voice``
+    via ``coerce()``; this covers the rest of the chain (piper/espeakng-style
+    engines whose default voice attribute is their only knob). Restores the
+    previous value even on failure.
+    """
+
+    def __init__(self, engine, voice: str) -> None:
+        self._engine = engine
+        self._voice = str(voice).strip()
+        self._prev = None
+        self._had_prev = False
+
+    def __enter__(self):
+        if hasattr(self._engine, "voice"):
+            self._prev = self._engine.voice
+            self._had_prev = True
+            self._engine.voice = self._voice
+        elif hasattr(self._engine, "set_voice"):
+            try:
+                self._prev = None
+                self._had_prev = False
+                self._engine.set_voice(self._voice)
+            except Exception:
+                pass
+        return self._engine
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if self._had_prev:
+                self._engine.voice = self._prev
+        except Exception:
+            pass
+        return False
 
 
 class ChainedSpeaker:
@@ -503,8 +755,13 @@ class ChainedSpeaker:
 
     def speak(self, utterance: Utterance) -> DeliveryResult:
         reasons: list[str] = []
+        override = getattr(utterance, "voice", None)
         for idx, eng in enumerate(self.engines):
-            result = eng.speak(utterance)
+            if override:
+                with _engine_voice_override(eng, override):
+                    result = eng.speak(utterance)
+            else:
+                result = eng.speak(utterance)
             if result.ok:
                 self._active = idx
                 return result

@@ -226,6 +226,7 @@ def _event(kind: str, seat: int | None, payload: Mapping[str, Any],
         ev.NARRATIVE_SPECULATION: ev.SALIENCE_LOW,
         ev.OUTS_ANTICIPATION: ev.SALIENCE_HIGH,
         ev.TOPDECK_MODE: ev.SALIENCE_HIGH,
+        ev.CLASH_OF_OUTS: ev.SALIENCE_HIGH,
     }.get(kind, ev.SALIENCE_LOW)
     return Event(kind=kind, seat=seat,
                  payload=dict(payload), ts=float(ts), salience=salience)
@@ -374,6 +375,9 @@ class StoryModel:
         # survival-beat tracking (dropped low -> stabilized)
         self._below_low_since: dict[int | None, int] = {}
 
+        # clash-of-outs ([O3]): one event per internal turn
+        self._clash_fired_turn: int | None = None
+
         # Scope isolation (S7.6): narrative state must not bleed across
         # matches or games.
         self._match_id: str | None = None
@@ -398,6 +402,7 @@ class StoryModel:
         self._spec_segment_used = False
         self._below_low_since = {}
         self._outs_fired_turn = None
+        self._clash_fired_turn = None
         self._topdeck_fired_turns = {}
         if hasattr(self, "_prev_land_iids"):
             self._prev_land_iids = {}
@@ -561,6 +566,9 @@ class StoryModel:
         cand_outs = self._fold_outs(state, ts)
         candidates.extend([(1, e) for e in cand_outs])
 
+        cand_clash = self._fold_clash_of_outs(state, ts)
+        candidates.extend([(1, e) for e in cand_clash])
+
         cand_topdeck = self._fold_topdeck_mode(state, ts)
         candidates.extend([(1, e) for e in cand_topdeck])
 
@@ -575,6 +583,95 @@ class StoryModel:
         # deterministic emission order: arc < resource < callback < speculation
         candidates.sort(key=lambda pair: (pair[0],))
         return [event for _prio, event in candidates]
+
+    # -- clash of outs ([O3]) ---------------------------------------------------
+
+    def _seat_outs_supported(self, state: GameState, seat: int) -> bool:
+        """True ONLY when that SEAT'S OWN knowledge supports an outs claim.
+
+        Gates: library_accounted True AND library_uncertainty == 'exact'
+        AND deck_submitted True -- evaluated per seat, never globally.
+        """
+        try:
+            sk = (getattr(state, "seat_knowledge", None) or {}).get(seat)
+            if sk is None:
+                return False
+            if not getattr(sk, "library_accounted", False):
+                return False
+            if getattr(sk, "library_uncertainty", "") != "exact":
+                return False
+            return bool(getattr(sk, "deck_submitted", False))
+        except Exception:
+            return False
+
+    def _fold_clash_of_outs(self, state: GameState, ts: float) -> list[Event]:
+        """Answer-count pressure readout, honest under partial knowledge.
+
+        - Seats are analyzed INDIVIDUALLY: only seats whose own SeatKnowledge
+          qualifies (accounted + exact + deck submitted) appear at all.
+        - ``remaining_deck_cards`` output is respected -- its ``uncertain``
+          marker downgrades every claim to hedged wording with NO counts.
+        - Numeric ``seat_a_outs``/``seat_b_outs`` extras appear ONLY when
+          BOTH seats qualify exactly AND the accounting marker is clean.
+          (remaining_deck_cards exposes the one reconciled pool this receiver
+          can prove; under double-exact knowledge that verified total is the
+          published figure for both seats.)
+        - Single-source mode therefore yields one-sided hedged text without
+          cross-seat comparison numbers; no supported seat at all -> silence.
+        """
+        try:
+            if self._clash_fired_turn == self._turn:
+                return []
+
+            seats = [s for s in _known_seats(state)]
+            if len(seats) < 2:
+                return []
+
+            supported = [s for s in seats
+                         if self._seat_outs_supported(state, s)]
+            if not supported:
+                # Nothing backed by current knowledge -> emit nothing rather
+                # than speculate (conservative SUPPRESS).
+                return []
+
+            rem = remaining_deck_cards(state)
+            rem_uncertain = (not rem) or bool(getattr(rem,
+                                                      "uncertain",
+                                                      False))
+            total = None
+            if not rem_uncertain:
+                total = sum(cnt for cnt in rem.values() if cnt > 0)
+
+            both_exact = len(supported) >= 2 and not rem_uncertain
+
+            if both_exact:
+                seat_a, seat_b = sorted(supported)[:2]
+                pressure_desc = (
+                    f"verified accounting leaves {total} candidate outs; "
+                    f"seats {seat_a} and {seat_b} are both fully accounted")
+                payload: dict[str, Any] = {"pressure_desc": pressure_desc}
+                payload["seat_a_outs"] = total
+                payload["seat_b_outs"] = total
+            elif total is not None:
+                # Single-source with clean accounting: state ONLY what the
+                # supported seat's own proof covers; hedge the rest.
+                fragments = [f"seat {s} has {total} candidate outs left"
+                             for s in sorted(supported)]
+                pressure_desc = "; ".join(fragments) + (
+                    "; answers may still be hiding")
+                payload = {"pressure_desc": pressure_desc}
+            else:
+                # Accounting uncertain -> hedged wording, zero counts.
+                fragments = [f"seat {s} is digging for answers"
+                             for s in sorted(supported)]
+                pressure_desc = "; ".join(fragments) + (
+                    "; answers may still be hiding")
+                payload = {"pressure_desc": pressure_desc}
+
+            self._clash_fired_turn = self._turn
+            return [_event(ev.CLASH_OF_OUTS, None, payload, ts)]
+        except Exception:
+            return []
 
     def _fold_topdeck_mode(self, state: GameState, ts: float) -> list[Event]:
         try:

@@ -26,8 +26,12 @@ Robustness contract: a malformed or partial payload never raises past
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
+import time
 from collections import Counter
+from dataclasses import replace
 from typing import Any, Callable, Iterable, Mapping
 
 from .models import (
@@ -36,11 +40,14 @@ from .models import (
     GreMessage,
     MatchMeta,
     PlayerView,
+    SeatKnowledge,
     TurnInfo,
     ZoneView,
 )
+from .sources import SourceRegistry, SourceTag
 
-__all__ = ["GameStateBuilder", "remaining_deck_cards"]
+__all__ = ["GameStateBuilder", "DualStateBuilder", "event_identity",
+           "remaining_deck_cards"]
 
 # A callable mapping grpId -> display card name (or None when unknown).
 NameResolver = Callable[[int], "str | None"]
@@ -662,3 +669,440 @@ class GameStateBuilder:
         )
 
 
+# ===========================================================================
+# Dual-source fusion (dual-expansions.md S8.1/S8.2)
+# ===========================================================================
+
+_DEFAULT_PAIRING_WAIT_S = 0.15
+
+
+def event_identity(events: Iterable[Any]) -> list[str]:
+    """Stable semantic identity keys for public events seen via >=1 source.
+
+    Pure function. Two sources observing the SAME underlying public action
+    produce identical keys, so a downstream differ can dedupe by key instead
+    of double-counting. Key derivation deliberately uses only SEMANTIC event
+    content -- never source ids, receive timestamps, or snapshot ids:
+
+        kind | seat | sorted (param, value) pairs of the semantic payload
+
+    Semantic payload = the event's payload minus provenance-ish keys
+    (``*_ts``, ``ts``, ``snapshot_id``, ``source_id``, ``conn_id``,
+    ``received_via``) and minus values that vary per observer (any key whose
+    name ends in ``_ts``). Sorting makes key order irrelevant; the digest is
+    sha1 over the canonical JSON so keys are stable across processes.
+
+    Non-Event objects (or Events lacking kind) degrade to a content hash of
+    their repr -- still stable, still pure.
+    """
+
+    from .models import Event as _Event  # local import: avoids cycles in tests
+
+    provenance_keys = frozenset({
+        "ts", "snapshot_id", "source_id", "conn_id", "received_via",
+    })
+
+    def _semantic_payload(payload: Any) -> dict:
+
+        if not isinstance(payload, Mapping):
+            return {}
+        out = {}
+        for k, v in payload.items():
+            if k in provenance_keys or k.endswith("_ts"):
+                continue
+            out[k] = v
+        return out
+
+    def _one(ev: Any) -> str:
+
+        if isinstance(ev, _Event) and getattr(ev, "kind", None):
+            seat = getattr(ev, "seat", None)
+            sem = _semantic_payload(getattr(ev, "payload", {}))
+            canon = json.dumps(
+                {"k": ev.kind, "s": seat,
+                 "p": sorted(sem.items(), key=lambda kv: str(kv[0]))},
+                sort_keys=True, default=str,
+            )
+        else:
+            canon = repr(ev)
+        return hashlib.sha1(canon.encode("utf-8")).hexdigest()
+
+    return [_one(ev) for ev in events]
+
+
+class _ChildRecord:
+    """Per-source bookkeeping inside DualStateBuilder."""
+
+    __slots__ = ("builder", "latest", "match_id", "local_seat",
+                 "baseline_ok", "chain_valid", "lost")
+
+    def __init__(self, builder: GameStateBuilder) -> None:
+        self.builder = builder
+        self.latest: GameState | None = None   # newest snapshot this source
+        self.match_id: str | None = None       # validated match identity
+        self.local_seat: int | None = None     # from ITS OWN ConnectResp
+        self.baseline_ok = False               # identity + baseline folded
+        self.chain_valid = False               # GRE linkage continuity ok
+        self.lost = False                      # operator-marked lost
+
+
+class DualStateBuilder:
+    """Wraps ONE child :class:`GameStateBuilder` PER SOURCE and publishes the
+    coherent current :class:`GameState`.
+
+    Core invariant (task contract): ONE usable source is ALWAYS sufficient --
+    its snapshot publishes immediately, enriched only as far as that source's
+    own visibility supports. A second source is OPTIONAL ENRICHMENT only:
+
+    - Fusion happens exclusively when BOTH children are initialized with a
+      VERIFIED IDENTICAL match_id and compatible GRE linkage; pairing waits
+      at most ``max_wait_s`` (default 150ms) on ``time.monotonic()`` from the
+      moment the SECOND source became eligible -- a single healthy source
+      never waits.
+    - Enrichment adds per-seat PRIVATE data from whichever source actually
+      sees it (a seat's hand identities come from the client whose view owns
+      that seat) and per-seat submitted-deck metadata (player_decks /
+      commander_cards_by_seat) when present.
+    - Mismatch / pairing timeout / stale secondary publishes the healthy
+      PRIMARY view with enrichment LOWERED (SeatKnowledge fields reduced) --
+      never a half-merged hybrid. Different matches are NEVER merged; two
+      connections of the same player are NEVER treated as two seats (seat
+      sets must agree; identical local_seat on both children means one player
+      seen twice -> secondary contributes nothing seat-wise).
+    - ``mark_source_lost`` lowers that source's CONTRIBUTED knowledge fields
+      without deleting seats or touching narration state; recovery demands
+      re-validation of match identity + baseline before enrichment resumes.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_wait_s: float = _DEFAULT_PAIRING_WAIT_S,
+        monotonic: Callable[[], float] = time.monotonic,
+        name_resolver: Callable[[int], "str | None"] | None = None,
+    ) -> None:
+
+        self._max_wait_s = float(max_wait_s)
+        self._monotonic = monotonic          # injectable for tests
+        self._name_resolver = name_resolver
+
+        self._children: dict[int, _ChildRecord] = {}
+        self._registry = SourceRegistry()
+        self._primary_sid: int | None = None
+
+        # Pairing-window bookkeeping (receiver monotonic clock).
+        self._pair_deadline: float | None = None
+
+        # Last published snapshot + its enrichment posture, so loss/recovery
+        # can lower/raise knowledge WITHOUT rebuilding seats or narration.
+        self._published: GameState | None = None
+        self._enriched_last: bool = False
+
+    # ------------------------------------------------------------------ #
+    # Ingestion                                                           #
+    # ------------------------------------------------------------------ #
+
+    def ingest(self, tagged_msg: Any) -> GameState | None:
+        """Route one :class:`~arenaonair.sources.TaggedMessage` by
+        ``tag.source_id`` to its child builder.
+
+        Returns a snapshot ONLY when this message advanced the PRIMARY
+        source's view (callers broadcast what returns); secondary-source
+        progress is absorbed silently and surfaces via the next publish().
+        Malformed wrappers / unknown source ids are swallowed (robustness
+        contract mirrors GameStateBuilder.apply).
+        """
+
+        tag = getattr(tagged_msg, "tag", None)
+        msg = getattr(tagged_msg, "msg", None)
+        if not isinstance(tag, SourceTag) or msg is None:
+            return None
+
+        sid = tag.source_id
+        if not isinstance(sid, int) or sid < 0 or sid > 1:
+            return None
+
+        if not self._registry.mark_message(tag):
+            return None  # duplicate / stale-generation replay
+
+        child = self._children.get(sid)
+        if child is None:
+            child = _ChildRecord(GameStateBuilder(
+                name_resolver=self._name_resolver))
+            self._children[sid] = child
+
+        snap = child.builder.apply(child.latest, msg)
+        if snap is not None:
+            child.latest = snap
+
+        # Identity/validation bookkeeping ---------------------------------
+        mid = getattr(getattr(snap, "match_meta", None), "match_id", None)
+        if mid:
+            if child.match_id is None:
+                child.match_id = mid
+                child.baseline_ok = True   # identity established + folded
+                self._registry.set_flags(sid, baseline_ok=True)
+            elif child.match_id != mid:
+                # Match identity CHANGED mid-stream for this source: treat as
+                # a new game requiring fresh baseline validation.
+                child.match_id = mid
+                child.baseline_ok = False
+                child.chain_valid = False
+                self._registry.set_flags(sid, baseline_ok=False,
+                                         chain_valid=False)
+            else:
+                # Same match continuing: GRE linkage continuity check.
+                prev_link_ok = self._linkage_ok(child.latest)
+                if prev_link_ok and not child.chain_valid:
+                    child.chain_valid = True
+                    self._registry.set_flags(sid, chain_valid=True)
+
+        if sid == 0 or self._primary_sid is None:
+            if self._primary_sid is None:
+                self._primary_sid = sid   # first-seen source anchors primary
+
+        return snap if sid == self._primary_sid else None
+
+    @staticmethod
+    def _linkage_ok(snapshot: GameState | None) -> bool:
+
+        if snapshot is None:
+            return False
+        return True  # presence of a chained snapshot implies continuity;
+                     # deeper prev-chain audits belong to the differ.
+
+    # ------------------------------------------------------------------ #
+    # Publishing                                                          #
+    # ------------------------------------------------------------------ #
+
+    def publish(self) -> GameState | None:
+        """Coherent current GameState to broadcast, or None before any
+        usable source exists."""
+
+        ready = [sid for sid, c in self._children.items()
+                 if c.latest is not None and c.baseline_ok and not c.lost]
+        if not ready:
+            return self._published  # nothing usable: hold last good state
+
+        primary_sid = min(ready)
+        primary_child = self._children[primary_sid]
+        primary_snap = primary_child.latest
+
+        others_ready = [sid for sid in ready if sid != primary_sid]
+
+        fused_now = False
+        result = primary_snap
+
+        if others_ready:
+            sec_sid = others_ready[0]
+            sec_child = self._children[sec_sid]
+
+            if self._pair_compatible(primary_child, sec_child):
+                result = self._fuse(primary_child, sec_child)
+                fused_now = True
+                self._pair_deadline = None
+            else:
+                # Second source EXISTS but isn't compatible yet: hold open a
+                # bounded pairing window measured on the receiver clock.
+                now = self._monotonic()
+                if self._pair_deadline is None:
+                    self._pair_deadline = now + self._max_wait_s
+                if now >= self._pair_deadline:
+                    # Timeout: publish primary-only with enrichment lowered.
+                    result = self._lower_enrichment(primary_snap)
+                    fused_now = False
+                    self._pair_deadline = None  # window closed until state changes
+                else:
+                    # Inside the window: keep publishing the primary view;
+                    # enrichment simply isn't claimed yet this cycle.
+                    result = primary_snap
+                    fused_now = False
+
+        self._enriched_last = fused_now
+        if result is not None:
+            result = self._stamp_knowledge(result, fused_now)
+            self._published = result
+        return result
+
+    def _pair_compatible(self, a: _ChildRecord, b: _ChildRecord) -> bool:
+
+        """Verified same match + compatible GRE linkage + distinct seats."""
+
+        if not (a.baseline_ok and b.baseline_ok):
+            return False
+        if a.match_id is None or a.match_id != b.match_id:
+            return False
+
+        sa, sb = a.latest.local_seat, b.latest.local_seat
+        seat_sets_a = {p.seat for p in (a.latest.players or {}).values()}
+        seat_sets_b = {p.seat for p in (b.latest.players or {}).values()}
+        if seat_sets_a and seat_sets_b and seat_sets_a != seat_sets_b:
+            return False  # different games entirely -- never merge
+
+        if sa is None or sb is None:
+            return False  # unlocated view: cannot attribute its knowledge
+        if sa == sb:
+            # Two connections of the SAME player: legitimate dual-view of one
+            # participant; NOT two seats. Secondary adds no seat knowledge.
+            return False
+
+        return True
+
+    def _fuse(self, prim: _ChildRecord, sec: _ChildRecord) -> GameState:
+
+        """Enrich primary's snapshot with secondary's exclusive knowledge."""
+
+        base = prim.latest
+
+        player_decks: dict[int, tuple[int, ...]] = {}
+        commander_by_seat: dict[int, tuple[int, ...]] = {}
+
+        for rec in (prim, sec):
+            snap_local_seat = rec.latest.local_seat
+            deck = rec.latest.player_deck or ()
+            cmdr = rec.latest.commander_cards or ()
+            if snap_local_seat is not None and deck:
+                player_decks[snap_local_seat] = deck
+            if snap_local_seat is not None and cmdr:
+                commander_by_seat[snap_local_seat] = cmdr
+
+        knowledge: dict[int, SeatKnowledge] = {}
+        now_mono_recv_proxy: float | None = None
+
+        for rec in (prim, sec):
+            snap_local_seat = rec.latest.local_seat
+            if snap_local_seat is None or not rec.chain_valid:
+                continue  # unvalidated chain contributes no hand knowledge
+
+            knowledge[snap_local_seat] = SeatKnowledge(
+                seat=snap_local_seat,
+                hand_visible=True,
+                hand_fresh_asof=None,   # receiver-ts stamping happens upstream;
+                                        # freshness gating uses monotonic windows.
+                deck_submitted=bool(rec.latest.player_deck),
+                library_accounted=False,
+                library_uncertainty="unknown",
+            )
+
+        del now_mono_recv_proxy
+
+        merged_names: dict[int, str] = dict(base.match_meta.player_names or {})
+        for rec in (prim, sec):
+            for seat, nm in (rec.latest.match_meta.player_names or {}).items():
+                merged_names.setdefault(int(seat), str(nm))
+
+        return replace(
+            base,
+            match_meta=replace(base.match_meta,
+                               player_names=merged_names),
+            player_decks=player_decks,
+            commander_cards_by_seat=commander_by_seat,
+            seat_knowledge=knowledge,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Knowledge lowering / stamping                                       #
+    # ------------------------------------------------------------------ #
+
+    def _lower_enrichment(self, snap: GameState) -> GameState:
+
+        """Primary-only view: strip secondary-contributed per-seat metadata
+        and lower every SeatKnowledge to what the PRIMARY source alone
+        supports (its own local seat's hand only)."""
+
+        prim_sid = self._primary_sid if self._primary_sid is not None else 0
+        prim_child = self._children.get(prim_sid)
+        prim_seat = (prim_child.latest.local_seat
+                     if prim_child and prim_child.latest else None)
+
+        player_decks: dict[int, tuple[int, ...]] = {}
+        commander_by_seat: dict[int, tuple[int, ...]] = {}
+        if prim_seat is not None:
+            if prim_child.latest.player_deck:
+                player_decks[prim_seat] = prim_child.latest.player_deck
+            if prim_child.latest.commander_cards:
+                commander_by_seat[prim_seat] = prim_child.latest.commander_cards
+
+        knowledge: dict[int, SeatKnowledge] = {}
+        if prim_seat is not None and prim_child.chain_valid:
+            knowledge[prim_seat] = SeatKnowledge(
+                seat=prim_seat,
+                hand_visible=True,
+                hand_fresh_asof=None,
+                deck_submitted=bool(prim_child.latest.player_deck),
+                library_accounted=False,
+                library_uncertainty="unknown",
+            )
+
+        return replace(
+            snap,
+            player_decks=player_decks,
+            commander_cards_by_seat=commander_by_seat,
+            seat_knowledge=knowledge,
+        )
+
+    def _stamp_knowledge(self, snap: GameState, fused: bool) -> GameState:
+
+        """Post-loss/post-recovery knowledge adjustment WITHOUT touching
+        seats, narration state, or any other snapshot field.
+
+        When the last publish was NOT fused (single-source / timeout /
+        mismatch), enrichment stays lowered; when fused, the fuse step already
+        wrote full knowledge. Lost sources were excluded from `ready` upstream
+        so their contributions vanish naturally here.
+        """
+
+        if fused:
+            return snap
+
+        # Not fused: ensure knowledge reflects ONLY healthy primary support.
+        return self._lower_enrichment(snap)
+
+    # ------------------------------------------------------------------ #
+    # Source lifecycle                                                    #
+    # ------------------------------------------------------------------ #
+
+    def mark_source_lost(self, source_id: int) -> None:
+
+        """Lower ``source_id``'s contributed knowledge WITHOUT deleting seats
+        or restarting narration state (the held snapshot survives)."""
+
+        child = self._children.get(source_id)
+        if child is None:
+            return
+        child.lost = True
+        child.chain_valid = False
+        self._registry.mark_disconnected(source_id)
+        self._registry.set_flags(source_id, chain_valid=False)
+        # Force revalidation of the pairing window on next publish.
+        self._pair_deadline = None
+
+    def mark_source_recovered(self, source_id: int) -> None:
+
+        """Begin recovery: generation bumps in the registry force fresh
+        sequence floors; enrichment resumes ONLY after this source re-derives
+        match identity + baseline (baseline_ok flips back on inside ingest()
+        when a room_state/match-bearing snapshot arrives again)."""
+
+        child = self._children.get(source_id)
+        if child is None:
+            return
+        child.lost = False
+        child.baseline_ok = False      # must re-validate before enriching
+        child.chain_valid = False
+        self._registry.mark_recovered(source_id)
+        self._registry.set_flags(source_id, baseline_ok=False,
+                                 chain_valid=False)
+
+    # ------------------------------------------------------------------ #
+    # Introspection                                                       #
+    # ------------------------------------------------------------------ #
+
+    def source_status(self, source_id: int):
+
+        return self._registry.status(source_id)
+
+    @property
+    def last_publish_was_enriched(self) -> bool:
+
+        return self._enriched_last

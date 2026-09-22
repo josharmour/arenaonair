@@ -42,6 +42,18 @@ DEFAULT_DIFFER_CONFIG = {
     "board_creatures_delta": 2,
     "board_power_delta": 4,
     "suppress_repeats": False,
+    # --- omniscient strategic detectors ([O2]); conservative defaults -----
+    # Hand-freshness tolerance in clock units (real receiver ts when the
+    # snapshot carries one, else float(snapshot_id)); older-than-this hands
+    # are STALE and every dependent claim is suppressed.
+    "trap_hand_fresh_tolerance": 5.0,
+    # Armed traps expire after this much clock distance without springing.
+    "trap_validity_window": 30.0,
+    # Minimum visible lands backing a seat before its mana counts as KNOWN;
+    # fewer/no visible lands -> mana unknown -> ARMED claim suppressed.
+    "trap_min_lands": 1,
+    # Bluff detector uses its own freshness gate on the same clock.
+    "bluff_hand_fresh_tolerance": 5.0,
 }
 
 _ZONE_PREFIX = "zonetype_"
@@ -248,6 +260,7 @@ class EventDiffer:
         self._seen_unfair_plays = set()   # GAME-scoped instanceId set
         self._seen_counter_wars = set()   # MATCH-scoped (match_id,top_iid)
         self._cantrips_cast_this_turn = {} # GAME-scoped (turn, seat)->names
+        self._armed_traps = {}            # GAME-scoped seat -> armed-trap entry ([O2])
 
     # ------------------------------------------------------- scope resets
 
@@ -259,6 +272,7 @@ class EventDiffer:
         self._seen_combat_tricks.clear()
         self._seen_unfair_plays.clear()
         self._cantrips_cast_this_turn.clear()
+        self._armed_traps.clear()
         self._baseline_creatures = None
         self._baseline_power = None
         self._last_stage = None
@@ -339,6 +353,9 @@ class EventDiffer:
         events.extend(self.detect_chump_block(prev, cur))
         events.extend(self.detect_hand_sculpting(prev, cur))
         events.extend(self.detect_unfair_play(prev, cur))
+        events.extend(self.detect_trap_armed(prev, cur))
+        events.extend(self.detect_trap_sprung(prev, cur))
+        events.extend(self.detect_bluff(prev, cur))
 
         base_ts = getattr(cur, "ts", None)
         stamped = []
@@ -1542,6 +1559,345 @@ class EventDiffer:
                     ts=ts_base + idx * 0.01,
                     salience=ev.SALIENCE_HIGH,
                 ))
+                idx += 1
+            return out
+        except Exception:
+            return []
+
+    # ------------------------------------------- omniscient strategic ([O2])
+    #
+    # Honesty discipline for these detectors:
+    # - Every claim gates on ITS OWN SeatKnowledge prerequisites (never the
+    #   blanket is_omniscient flag).
+    # - Unsupported states SUPPRESS entirely -- emit nothing rather than guess.
+    # - The deterministic clock is float(snapshot_id) when the snapshot carries
+    #   no wall-clock ts (same stand-in story.py documents).
+
+    def _clock(self, state):
+        """Receiver ts when present, else float(snapshot_id) stand-in."""
+        try:
+            ts = getattr(state, "ts", None)
+            if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+                return float(ts)
+            return float(getattr(state, "snapshot_id", 0) or 0)
+        except Exception:
+            return 0.0
+
+    def _seat_knowledge(self, state, seat):
+        try:
+            sk = (getattr(state, "seat_knowledge", None) or {}).get(seat)
+            return sk
+        except Exception:
+            return None
+
+    def _hand_fresh(self, sk, clock, tolerance):
+        """True only when hand_fresh_asof exists and is within tolerance."""
+        try:
+            if sk is None or not getattr(sk, "hand_visible", False):
+                return False
+            hfa = getattr(sk, "hand_fresh_asof", None)
+            if not isinstance(hfa, (int, float)) or isinstance(hfa, bool):
+                return False
+            return abs(float(clock) - float(hfa)) <= float(tolerance)
+        except Exception:
+            return False
+
+    def _visible_hand_refs(self, state, seat):
+        """Actual visible hand contents for ``seat`` ([] when invisible)."""
+        out = []
+        try:
+            objs = (getattr(state, "objects", None) or {})
+            for zone in (getattr(state, "zones", None) or {}).values():
+                if _norm_zone_type(getattr(zone, "zone_type", "")) != "hand":
+                    continue
+                if getattr(zone, "owner_seat", None) != seat:
+                    continue
+                for iid in getattr(zone, "object_ids", ()) or ():
+                    ref = objs.get(iid)
+                    if ref is not None:
+                        out.append(ref)
+        except Exception:
+            return []
+        return out
+
+    def _known_mana_lands(self, state, seat):
+        """Count of VISIBLE lands backing ``seat``; 0 == mana unknown.
+
+        Mana availability is claimed ONLY from observable battlefield lands.
+        No visible lands -> unknown -> callers must SUPPRESS.
+        """
+        try:
+            bf_ids = _zone_object_ids(state, ("battlefield",))
+            objs = (getattr(state, "objects", None) or {})
+            count = 0
+            for iid in bf_ids:
+                ref = objs.get(iid)
+                if ref is None:
+                    continue
+                owner = (getattr(ref, "controller_seat", None)
+                         or getattr(ref, "owner_seat", None))
+                if owner == seat and "land" in (getattr(ref,
+                                                    "card_types",
+                                                    ()) or ()):
+                    count += 1
+            return count
+        except Exception:
+            return 0
+
+    def _public_casts_this_window(self, prev, cur):
+        """[{name, seat}] of public casts observed this window.
+
+        Mirrors detect_cast's authoritative sources without touching its
+        dedupe state so sibling detectors stay independent.
+        """
+        out = []
+        try:
+            objs = (cur.objects or {}) if cur else {}
+            objs_prev = (prev.objects or {}) if prev else {}
+            seen_iids = set()
+
+            for ann in _iter_annotations(self._window_msgs):
+                types = _annotation_types(ann)
+                if "AnnotationType_ZoneTransfer" not in types:
+                    continue
+                details = _detail_map(ann.get("details"))
+                if "cast" not in str(details.get("category") or "").lower():
+                    continue
+                for aid in ann.get("affectedIds") or []:
+                    iid = _as_int(aid)
+                    if iid is None or iid in seen_iids:
+                        continue
+                    seen_iids.add(iid)
+                    ref = objs.get(iid) or objs_prev.get(iid)
+                    seat = (getattr(ref, "controller_seat", None)
+                            or getattr(ref, "owner_seat", None)
+                            or _as_int(ann.get("affectorId")))
+                    out.append({"name": getattr(ref, "name", None),
+                                "seat": seat})
+
+            prev_stack = _zone_object_ids(prev, ("stack",))
+            cur_stack = _zone_object_ids(cur, ("stack",))
+            spell_types = ("creature", "instant", "sorcery", "enchantment",
+                           "artifact", "planeswalker", "battle")
+            for iid in sorted(cur_stack - prev_stack):
+                if iid in seen_iids:
+                    continue
+                ref = objs.get(iid)
+                if ref is None:
+                    continue
+                if not any(t in (getattr(ref, "card_types", ()) or ())
+                           for t in spell_types):
+                    continue
+                seen_iids.add(iid)
+                out.append({"name": getattr(ref, "name", None),
+                            "seat": getattr(ref, "controller_seat", None)
+                            or getattr(ref, "owner_seat", None)})
+
+            is_real_game = any(_gsm_of(m).get("gameStateId") is not None
+                               for m in self._window_msgs)
+            if not out and not is_real_game:
+                for seat_id, action in _iter_actions(self._window_msgs):
+                    if (_norm_enum(action.get("actionType"))
+                            != "actiontype_cast"):
+                        continue
+                    iid = _as_int(action.get("instanceId"))
+                    if iid is None or iid in seen_iids:
+                        continue
+                    seen_iids.add(iid)
+                    ref = objs.get(iid) if iid is not None else None
+                    out.append({
+                        "name": (getattr(ref, "name", None)
+                                 if ref is not None else None),
+                        "seat": seat_id})
+        except Exception:
+            return out
+        return out
+
+    def detect_trap_armed(self, prev, cur):
+        """ARMED: fresh visible hand holds a reactive card behind known mana.
+
+        Prerequisites (each independently required; ANY miss -> []):
+        - target seat's hand_visible AND hand_fresh_asof within tolerance;
+        - mana KNOWN for that seat from visible battlefield lands
+          (< trap_min_lands visible lands == unknown -> SUPPRESS);
+        - a reactive card actually sits in the visible hand;
+        - no live armed entry already registered for that seat.
+        """
+        try:
+            clock = self._clock(cur)
+            tol = self.cfg.get("trap_hand_fresh_tolerance", 5.0)
+            min_lands = int(self.cfg.get("trap_min_lands", 1))
+            out = []
+            ts_base = getattr(cur, "ts", 0.0) or 0.0
+
+            knowledge = getattr(cur, "seat_knowledge", None) or {}
+            for seat in sorted(knowledge):
+                sk = knowledge.get(seat)
+                if sk is None:
+                    continue
+                if not self._hand_fresh(sk, clock, tol):
+                    continue  # stale/invisible hand -> suppress entirely
+                lands_seen = self._known_mana_lands(cur, seat)
+                if lands_seen < min_lands:
+                    continue  # mana unknown -> conservative SUPPRESS
+                # Already armed? one live trap per seat per game.
+                existing = self._armed_traps.get(seat)
+                if existing is not None:
+                    # Lazily expire stale entries so they never refire.
+                    if clock - existing["armed_clock"] \
+                            > float(self.cfg.get("trap_validity_window",
+                                                 30.0)):
+                        self._armed_traps.pop(seat, None)
+                    else:
+                        continue
+
+                threat_name = None
+                threat_grp = None
+                for ref in self._visible_hand_refs(cur, seat):
+                    name = getattr(ref, "name", None)
+                    if name and is_counterspell(name):
+                        threat_name = name
+                        threat_grp = getattr(ref, "grp_id", None)
+                        break
+                if threat_name is None:
+                    continue  # nothing reactive visibly held -> no claim
+
+                self._armed_traps[seat] = {
+                    "threat_name": threat_name,
+                    "grp_id": threat_grp,
+                    "armed_clock": clock,
+                }
+                out.append(Event(
+                    kind=ev.TRAP_ARMED,
+                    seat=seat,
+                    payload={"seat": seat, "threat_name": threat_name},
+                    ts=ts_base,
+                    salience=ev.SALIENCE_LOW))
+            return out
+        except Exception:
+            return []
+
+    def detect_trap_sprung(self, prev, cur):
+        """SPRUNG: a public cast walks into a LIVE armed trap in-window.
+
+        Requires an armed registry entry whose validity window still covers
+        the cast; matching clears the entry so stale traps never refire.
+        """
+        try:
+            if not self._armed_traps:
+                return []
+            clock = self._clock(cur)
+            window = float(self.cfg.get("trap_validity_window", 30.0))
+
+            # Expire dead entries first.
+            for seat in sorted(list(self._armed_traps)):
+                entry = self._armed_traps.get(seat)
+                if entry is not None and clock - entry["armed_clock"] > window:
+                    self._armed_traps.pop(seat, None)
+
+            casts = self._public_casts_this_window(prev, cur)
+            if not casts:
+                return []
+
+            out = []
+            ts_base = getattr(cur, "ts", 0.0) or 0.0
+            idx = 0
+            for trap_seat in sorted(list(self._armed_traps)):
+                entry = self._armed_traps[trap_seat]
+                for cast in casts:
+                    caster = cast.get("seat")
+                    if caster is None or caster == trap_seat:
+                        continue  # own cast never springs own trap
+                    victim_name = cast.get("name")
+                    self._armed_traps.pop(trap_seat, None)  # clear: no refire
+                    out.append(Event(
+                        kind=ev.TRAP_SPRUNG,
+                        seat=caster,
+                        payload={"victim_name": victim_name},
+                        ts=ts_base + idx * 0.01,
+                        salience=ev.SALIENCE_HIGH))
+                    idx += 1
+                    break  # one spring per armed entry per window
+            return out
+        except Exception:
+            return []
+
+    def detect_bluff(self, prev, cur):
+        """Qualified priority-delay observation from VERIFIED facts only.
+
+        Fires ONLY when ALL hold:
+        - the seat's hand is visible AND fresh (own tolerance gate);
+        - mana is known from visible battlefield lands;
+        - verified delay evidence: the active player CHANGED to this seat this
+          window (they demonstrably received priority) AND they publicly cast
+          nothing this window;
+        - the visible hand actually holds a reactive card.
+        Payload carries ONLY a template-facing summary string built from the
+        REAL visible cards -- never an outright intent assertion.
+        """
+        try:
+            clock = self._clock(cur)
+            tol = self.cfg.get("bluff_hand_fresh_tolerance", 5.0)
+
+            active_now = getattr(getattr(cur, "turn_info", None),
+                                 "active_player", None)
+            active_before = (getattr(getattr(prev, "turn_info", None),
+                                     "active_player", None)
+                             if prev else None)
+            delay_evidence = (active_now is not None
+                              and active_now != active_before)
+
+            casts_by_me: set[int | None] = set()
+            for cast in self._public_casts_this_window(prev, cur):
+                casts_by_me.add(cast.get("seat"))
+
+            knowledge = getattr(cur, "seat_knowledge", None) or {}
+            out = []
+            ts_base = getattr(cur, "ts", 0.0) or 0.0
+            idx = 0
+            for seat in sorted(knowledge):
+                sk = knowledge.get(seat)
+                if sk is None:
+                    continue
+                if not self._hand_fresh(sk, clock, tol):
+                    continue  # invisible/stale hand -> suppress entirely
+                if not delay_evidence or active_now != seat:
+                    continue  # no verified priority delay -> suppress
+                if seat in casts_by_me:
+                    continue  # they acted; no delay to explain
+                if self._known_mana_lands(cur, seat) < 1:
+                    continue  # mana unknown -> suppress
+
+                held_names: list[str] = []
+                reactive_seen = False
+                for ref in self._visible_hand_refs(cur, seat):
+                    name = getattr(ref, "name", None)
+                    if not name:
+                        continue  # summary uses REAL cards only
+                    held_names.append(name)
+                    if is_counterspell(name):
+                        reactive_seen = True
+                if not reactive_seen or not held_names:
+                    continue
+
+                counts: dict[str, int] = {}
+                for name in held_names:
+                    counts[name] = counts.get(name, 0) + 1
+                parts = []
+                for name in sorted(counts):
+                    n = counts[name]
+                    word = {2: "two", 3: "three", 4: "four",
+                            5: "five"}.get(n)
+                    parts.append(f"{word} {name}s" if word and n > 1
+                                 else f"{n} {name}" if n > 1 else name)
+                summary = ("the hand we can see holds "
+                           + ", ".join(parts))
+                out.append(Event(
+                    kind=ev.BLUFF_DETECTED,
+                    seat=seat,
+                    payload={"visible_hand_summary": summary},
+                    ts=ts_base + idx * 0.01,
+                    salience=ev.SALIENCE_LOW))
                 idx += 1
             return out
         except Exception:

@@ -42,17 +42,27 @@ TOPDECK_MODE = "topdeck_mode"              # active player at zero cards in hand
 HAND_SCULPTING = "hand_sculpting"          # multiple cantrips/filtering spells cast to set up future turns
 UNFAIR_PLAY = "unfair_play"                # high-CMC bomb cheated into play turns ahead of schedule
 
+# Omniscient-strategic kinds -- prerequisite-gated detectors that stay honest
+# under partial knowledge ([O1]/[O2]). Each fires ONLY when its own specific
+# SeatKnowledge prerequisites are met; unsupported states emit nothing.
+TRAP_ARMED = "trap_armed"                  # visible fresh hand holds a reactive card w/ known mana behind it
+TRAP_SPRUNG = "trap_sprung"                # public cast walked into a live armed trap within its window
+BLUFF_DETECTED = "bluff_detected"          # verified priority delay + qualified visible-hand facts only
+CLASH_OF_OUTS = "clash_of_outs"            # exact-accounting answer-count pressure readout
+
 PLAY_BY_PLAY_KINDS = frozenset({
     MATCH_START, MATCH_END, GAME_START, GAME_END, LAND_DROP, CAST, RESOLVE,
     COUNTER, ATTACK_DECLARED, BLOCK_DECLARED, COMBAT_DAMAGE, LIFE_CHANGE,
     BOARD_SHIFT, TURN_START, GRAVEYARD_RECURSION,
     COUNTER_WAR, COMBAT_TRICK, CHUMP_BLOCK, UNFAIR_PLAY,
+    TRAP_SPRUNG, CLASH_OF_OUTS,
 })
 
 NARRATIVE_KINDS = frozenset({
     NARRATIVE_ARC, NARRATIVE_RESOURCE, NARRATIVE_CALLBACK, NARRATIVE_SPECULATION,
     HAND_ONLINE, TUTOR_ANTICIPATION, OUTS_ANTICIPATION, ARCHETYPE_DETECTED,
     TOPDECK_MODE, HAND_SCULPTING,
+    TRAP_ARMED, BLUFF_DETECTED,
 })
 
 ALL_KINDS = PLAY_BY_PLAY_KINDS | NARRATIVE_KINDS

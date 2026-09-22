@@ -302,3 +302,252 @@ class LogWatcher:
 
         state = "open" if self._fh is not None else "closed"
         return f"<LogWatcher path={self._opened_path!r} {state} offset={self._offset}>"
+
+
+class _Slot:
+    """Internal per-slot state for MultiLogWatcher (mirrors LogWatcher's
+    fixed truncation/rotation/partial-line logic, minus anchoring)."""
+
+    __slots__ = ("path", "fh", "offset", "pending", "identity")
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.fh: io.BufferedReader | None = None
+        self.offset = 0
+        self.pending = bytearray()
+        self.identity: tuple[int, int] | None = None
+
+
+class MultiLogWatcher:
+    """Independent multi-slot tailer over one or two Player.log paths.
+
+    ADDITIVE companion to :class:`LogWatcher` (which is untouched). Slots are
+    polled strictly independently: a missing/unreadable file in slot N never
+    stalls slot M, and a configured-but-absent slot is admitted transparently
+    the moment it becomes readable (starting at EOF-equivalent offset 0 of
+    whatever exists then -- no retroactive replay of old content beyond what
+    is physically in the file at admission time).
+
+    Yields tuples ``(source_id, ts_receiver_monotonic, line)`` where
+    source_id is the slot index (0 or 1) and the timestamp is taken from
+    ``time.monotonic()`` -- the RECEIVER clock. Client wall clocks never
+    establish ordering (S3.3).
+
+    Per-slot truncation/rotation semantics mirror LogWatcher's fixed logic:
+    rewind only on positive truncation evidence (size dropped below consumed
+    offset), reopen on stat-identity change, retain partial trailing lines
+    across polls.
+    """
+
+    MAX_SLOTS = 2
+
+    def __init__(
+        self,
+        paths: "list[os.PathLike[str] | str]",
+        *,
+        poll_interval: float = 0.25,
+        anchor: bool = False,
+    ) -> None:
+
+        if not 1 <= len(paths) <= self.MAX_SLOTS:
+            raise ValueError("MultiLogWatcher takes one or two paths")
+        self._paths = [Path(p) for p in paths]
+        self._poll_interval = max(0.0, float(poll_interval))
+        self._anchor = bool(anchor)
+        self._slots = [_Slot(p) for p in self._paths]
+
+    # ------------------------------------------------------------------ #
+
+    @property
+    def poll_interval(self) -> float:
+
+        return self._poll_interval
+
+    def poll(self) -> list[tuple[int, float, str]]:
+        """One non-blocking sweep over every slot, in slot order."""
+
+        out: list[tuple[int, float, str]] = []
+        for sid, slot in enumerate(self._slots):
+            out.extend((sid, ts, line)
+                       for ts, line in self._poll_slot(sid, slot))
+        return out
+
+    def lines(self) -> Iterator[tuple[int, float, str]]:
+        """Blocking iterator of (source_id, ts_receiver_monotonic, line)."""
+        while True:
+            batch = self.poll()
+            yield from batch
+            if not batch:
+                time.sleep(self._poll_interval)
+
+    def close(self) -> None:
+
+        for slot in self._slots:
+            if slot.fh is not None:
+                try:
+                    slot.fh.close()
+                finally:
+                    slot.fh = None
+
+    # ------------------------------------------------------------------ #
+
+    def _poll_slot(self, sid: int, slot: _Slot) -> list[tuple[float, str]]:
+
+        out: list[tuple[float, str]] = []
+
+        if slot.fh is None or self._need_reopen(slot):
+            if not self._open(slot):
+                return out  # missing/unreadable: this slot yields nothing,
+                             # other slots are unaffected (independence)
+
+        assert slot.fh is not None
+        data = self._read_available(slot)
+        if data:
+            out.extend(self._consume(slot, data))
+            return out
+
+        # No new bytes: catch pure truncation (size dropped below offset).
+        self._check_shrunk(slot)
+        return out
+
+    def _stat_identity(self, slot: _Slot) -> tuple[int, int] | None:
+
+        try:
+            st = slot.path.stat()
+            return (st.st_dev, st.st_ino)
+        except OSError:
+            return None
+
+    def _need_reopen(self, slot: _Slot) -> bool:
+
+        ident = self._stat_identity(slot)
+        if ident is None:
+            return False  # vanished momentarily; keep reading buffered handle
+        return slot.identity is not None and ident != slot.identity
+
+    def _open(self, slot: _Slot) -> bool:
+
+        try:
+            fh = open(slot.path, "rb")
+        except OSError:
+            return False
+
+        if slot.fh is not None:
+            slot.fh.close()
+
+        try:
+            st = os.fstat(fh.fileno())
+            ident = (st.st_dev, st.st_ino)
+            start = 0
+            if st.st_size > 0 and self._anchor:
+                start = self._anchor_offset(fh)
+            fh.seek(start)
+            slot.fh = fh
+            slot.identity = ident
+            slot.offset = start
+            slot.pending.clear()
+            return True
+        except OSError:
+            fh.close()
+            return False
+
+    def _anchor_offset(self, fh: io.BufferedReader) -> int:
+
+        # Same bounded backward scan as LogWatcher's anchor; used only when
+        # the caller opts in (default off so tests see deterministic tails).
+        try:
+            size = os.fstat(fh.fileno()).st_size
+        except OSError:
+            return 0
+        window_bytes = _DEFAULT_ANCHOR_WINDOW_LINES * 512
+        start_pos = max(0, size - window_bytes)
+        fh.seek(start_pos)
+        blob = fh.read(size - start_pos)
+        if start_pos > 0:
+            first_nl = blob.find(b"\n")
+            if first_nl != -1:
+                blob = blob[first_nl + 1:]
+        lines = blob.split(b"\n")
+        anchor_idx = -1
+        for i in range(len(lines) - 1, -1, -1):
+            line = lines[i]
+            if _ANCHOR_TAG.encode() not in line:
+                continue
+            if any(m.encode() in line for m in _ANCHOR_MARKERS):
+                anchor_idx = i
+                break
+        if anchor_idx == -1:
+            return 0
+        offset = start_pos + sum(len(l) + 1 for l in lines[:anchor_idx])
+        return min(offset, size)
+
+    def _current_size(self, slot: _Slot) -> int:
+
+        try:
+            assert slot.fh is not None
+            return os.fstat(slot.fh.fileno()).st_size
+        except OSError:
+            return 0
+
+    def _check_shrunk(self, slot: _Slot) -> bool:
+
+        if slot.fh is None:
+            return False
+        size = self._current_size(slot)
+        # Rewind ONLY on positive truncation evidence (LogWatcher semantics);
+        # idle-with-pending is normal and must never rewind.
+        if size < slot.offset:
+            try:
+                slot.fh.seek(0)
+                slot.offset = 0
+                slot.pending.clear()
+                return True
+            except OSError:
+                return False
+        return False
+
+    def _read_available(self, slot: _Slot) -> bytes:
+
+        assert slot.fh is not None
+        chunks: list[bytes] = []
+        while True:
+            try:
+                chunk = slot.fh.read(_READ_CHUNK)
+            except OSError:
+                break
+            if not chunk:
+                break
+            chunks.append(chunk)
+            if len(chunk) < _READ_CHUNK:
+                break
+        data = b"".join(chunks)
+        if data:
+            slot.offset += len(data)
+        return data
+
+    def _consume(self, slot: _Slot,
+                 data: bytes) -> list[tuple[float, str]]:
+
+        buf = bytes(slot.pending) + data if slot.pending else data
+        lines: list[tuple[float, str]] = []
+        start = 0
+        while True:
+            nl = buf.find(b"\n", start)
+            if nl == -1:
+                break
+            raw = buf[start:nl]
+            start = nl + 1
+            text = raw.decode("utf-8", errors="replace").rstrip("\r")
+            ts = time.monotonic()
+            lines.append((ts, text))
+        remainder = buf[start:]
+        if remainder != bytes(slot.pending):
+            slot.pending.clear()
+            slot.pending.extend(remainder)
+        return lines
+
+    def __repr__(self) -> str:
+
+        parts = [f"{i}:{s.path.name}@{s.offset}"
+                 for i, s in enumerate(self._slots)]
+        return f"<MultiLogWatcher [{' '.join(parts)}]>"

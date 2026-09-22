@@ -14,6 +14,7 @@ with the result so delivery stays confirmable end to end.
 from __future__ import annotations
 
 import importlib.util
+import logging
 import os
 import subprocess  # noqa: F401  (re-exported convenience for subclasses)
 import sys
@@ -21,6 +22,8 @@ import threading
 from typing import Union
 
 from ..models import DeliveryResult, Utterance
+
+logger = logging.getLogger(__name__)
 
 SpeakSource = Union[str, Utterance]
 
@@ -148,6 +151,82 @@ class KokoroEngine(TTSEngine):
         self._cancel_lock = threading.Lock()
         self._cancel_generation = 0
         self._speaking_generation = 0
+        # Warm multi-voice cache (dual-expansions.md S3.4): voice ids whose
+        # embedding tensor is already resident. Speaking with a cached voice
+        # must neither reload from disk nor re-init the model.
+        self._voice_lock = threading.Lock()
+        self._loaded_voices: set[str] = set()
+        self._voice_tensors: dict[str, object] = {}
+        # Diagnostic hook: last measured voice-selection overhead (seconds).
+        self.last_voice_switch_s: float | None = None
+
+    @property
+    def loaded_voices(self) -> frozenset:
+        """Voice ids currently resident in the warm cache (diagnostics)."""
+        with self._voice_lock:
+            return frozenset(self._loaded_voices)
+
+    def preload_voices(self, voices: list[str]) -> int:
+        """Warm the voice cache for BOTH booth voices before first speech.
+
+        Loads each voice's embedding tensor once (model init included on the
+        first load) and records it in ``_loaded_voices`` so later
+        ``_synthesize_pcm`` calls with that voice skip any reload path.
+        Idempotent per voice. Returns the number of voices newly loaded.
+        Never raises: unloadable voices are skipped with a DEBUG log so a
+        bad preset cannot take down startup.
+        """
+        loaded_now = 0
+        for voice in voices or []:
+            vid = str(voice).strip()
+            if not vid:
+                continue
+            with self._voice_lock:
+                if vid in self._loaded_voices:
+                    continue
+            try:
+                tensor = self._load_voice_tensor(vid)
+            except Exception as exc:
+                logger.debug("kokoro preload failed for voice %s: %s",
+                             vid, exc)
+                continue
+            with self._voice_lock:
+                self._voice_tensors[vid] = tensor
+                self._loaded_voices.add(vid)
+            loaded_now += 1
+            logger.debug("kokoro voice %s preloaded", vid)
+        return loaded_now
+
+    def _load_voice_tensor(self, voice_id: str):
+        """Materialize one voice embedding (forces pipeline init once).
+
+        Overridable in tests to observe exactly-once loading semantics.
+        """
+        pipe = self._get_pipeline()
+        load_voice = getattr(pipe, "load_voice", None)
+        if callable(load_voice):
+            return load_voice(voice_id)
+        # Older kokoro builds resolve the voice lazily inside __call__;
+        # touching the pipeline here is the warm-up equivalent.
+        return True
+
+    def measure_voice_switch(self) -> float:
+        """Diagnostic: seconds of pure voice-SELECTION overhead.
+
+        Times only the cache lookup / selection decision for the configured
+        voice — synthesis and playback are excluded by construction. The
+        value is also stored on ``last_voice_switch_s``.
+        """
+        import time as _time
+
+        start = _time.perf_counter()
+        with self._voice_lock:
+            cached = self.voice in self._loaded_voices
+            selected = self.voice if cached else None
+        elapsed = _time.perf_counter() - start
+        self.last_voice_switch_s = elapsed
+        _ = selected  # selection result; synthesis deliberately NOT run
+        return elapsed
 
     def available(self) -> bool:
         return importlib.util.find_spec("kokoro") is not None
@@ -206,7 +285,17 @@ class KokoroEngine(TTSEngine):
         pipe = self._get_pipeline()
         effective_speed = max(0.5, min(2.0, self.speed * rate))
         active_voice = voice or self.voice
-        for chunk in pipe(text, voice=active_voice, speed=effective_speed):
+        # Warm-cache guard: a preloaded voice must not re-enter any lazy
+        # load path inside the pipeline (older builds re-resolve the voice
+        # tensor per call). Handing the cached tensor over when available
+        # keeps hot switching between booth voices allocation-free.
+        with self._voice_lock:
+            cached_tensor = self._voice_tensors.get(active_voice)
+        if cached_tensor is not None:
+            use_voice = cached_tensor
+        else:
+            use_voice = active_voice
+        for chunk in pipe(text, voice=use_voice, speed=effective_speed):
             if self._is_cancelled(generation):
                 return
             audio = getattr(chunk, "audio", None)
