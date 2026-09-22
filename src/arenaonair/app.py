@@ -76,7 +76,7 @@ ALWAYS_SPOKEN_KINDS = frozenset({"match_start", "match_end"})
 IDLE_POLLS_BEFORE_DONE = 2
 
 #: Bound on waiting for the queue to drain between poll batches.
-_DRAIN_WAIT_SECONDS = 10.0
+_DRAIN_WAIT_SECONDS = 30.0  # slow-runner headroom (macOS CI)
 _DRAIN_POLL_SLEEP = 0.002
 
 
