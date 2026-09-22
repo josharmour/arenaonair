@@ -13,6 +13,12 @@ import time
 
 import pytest
 
+try:
+    import numpy  # noqa: F401
+    _HAS_NUMPY = True
+except ImportError:
+    _HAS_NUMPY = False
+
 from arenaonair.models import DeliveryResult, Event, Utterance
 from arenaonair.platform.tts import TTSEngine
 from arenaonair.speech import (
@@ -120,6 +126,8 @@ def _patch_loader(monkeypatch, registry: dict[str, _StubEngine]):
 # S7.1 — KokoroEngine.cancel scoped to the in-flight utterance
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(not _HAS_NUMPY,
+                        reason="numpy not installed")
 class TestS71KokoroCancelScoping:
     def _make(self, monkeypatch, n_chunks=3, hold=0.0):
         return _make_kokoro_stub(monkeypatch, n_chunks=n_chunks, hold=hold)
@@ -552,6 +560,8 @@ class _FakeProc:
         return b"", self.stderr
 
 
+@pytest.mark.skipif(not _HAS_NUMPY,
+                        reason="numpy not installed")
 class TestS75PiperPlayback:
     def _engine(self, monkeypatch, tmp_path, *, synth_rc=0, play_rc=0,
                 model_exists=True):
@@ -639,6 +649,8 @@ class TestS75PiperPlayback:
 # S7.10 -- afplay exit status checked; temp files cleaned on all paths
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(not _HAS_NUMPY,
+                        reason="numpy not installed")
 class TestS710AfplayStatus:
     def _engine(self):
         from arenaonair.platform.tts import KokoroEngine

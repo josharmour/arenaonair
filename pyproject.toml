@@ -13,6 +13,7 @@ dependencies = []
 [project.optional-dependencies]
 watchdog = ["watchdog>=4"]
 ui = ["PySide6>=6.6"]
+tts = ["kokoro-onnx>=0.4", "numpy>=1.24", "sounddevice>=0.4"]
 dev = ["pytest>=8", "pytest-timeout>=2"]
 
 [project.scripts]
