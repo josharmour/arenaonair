@@ -743,23 +743,31 @@ class TestS710AfplayStatus:
                          generation=generation)
 
     def test_playback_failure_propagates_to_delivery_layer(self, monkeypatch):
-        """End to end: afplay failure -> speak() -> unsuccessful DeliveryResult
-        with the actionable reason."""
+        """End to end: player failure -> speak() -> unsuccessful
+        DeliveryResult with the actionable reason.
+
+        Platform-independent by construction: the aplay playback path is
+        forced via player_bin (exists on every OS as a path) and
+        subprocess.run is scripted to exit 1, so the propagated reason is
+        deterministic regardless of which OS the suite runs on.
+        """
         import numpy as np
 
         from arenaonair.platform.tts import KokoroEngine
 
-        eng = KokoroEngine()
+        eng = KokoroEngine(player_bin="/usr/bin/aplay")
         monkeypatch.setattr(eng, "_get_pipeline", lambda: _FakePipeline(1))
 
         def fake_run(cmd, **kwargs):
+            # Only intercept the player invocation; anything else (none
+            # expected here) would fail loudly.
+            assert "aplay" in cmd[0], f"unexpected subprocess: {cmd}"
             return _FakeProc(returncode=1, stderr=b"audio stack dead")
 
         monkeypatch.setattr("subprocess.run", fake_run)
         res = eng.speak(mk("afplay-dead"))
         assert res.ok is False
-        # Actionable reason traveled to the delivery layer (this box is
-        # Linux, so the aplay branch of the same failure contract fires).
+        # Actionable reason traveled to the delivery layer.
         assert "playback exited 1" in res.reason
 
 
