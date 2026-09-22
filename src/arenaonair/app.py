@@ -524,6 +524,30 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--once", action="store_true",
                         help="Process until the watcher goes idle twice "
                              "consecutively, then exit (CI smoke mode)")
+    # Dual-booth broadcast flags (dual-expansions.md S3.6/S8.7):
+    parser.add_argument("--broadcast-mode", choices=("solo", "dual"),
+                        default=None,
+                        help="Booth mode; dual enables PBP + color analyst "
+                             "co-casters (works with a single log)")
+    parser.add_argument("--booth-preset", metavar="PRESET",
+                        choices=tuple(sorted(config_mod.BOOTH_PRESETS)),
+                        default=None,
+                        help="Co-caster voice preset (sports_desk, "
+                             "mixed_duo, premier_pro_tour, "
+                             "academic_tactical)")
+    parser.add_argument("--pbp-voice", metavar="VOICE", default=None,
+                        help="Override play-by-play voice")
+    parser.add_argument("--analyst-voice", metavar="VOICE", default=None,
+                        help="Override color analyst voice")
+    # Multi-source ingestion flags:
+    parser.add_argument("--log-player1", metavar="PATH", default=None,
+                        help="Player 1 log path (selects the multi-source "
+                             "file route; a second slot is optional)")
+    parser.add_argument("--log-player2", metavar="PATH", default=None,
+                        help="Player 2 log path (optional enrichment slot)")
+    parser.add_argument("--relay-listen", metavar="HOST:PORT", default=None,
+                        help="Start as a tournament relay receiver "
+                             "(e.g. 0.0.0.0:8765)")
     return parser
 
 
@@ -553,8 +577,37 @@ def main(argv=None) -> int:
         overrides["verbosity"] = args.verbosity
     if args.voice is not None:
         overrides["tts_voice"] = args.voice
+    if args.broadcast_mode is not None:
+        overrides["broadcast_mode"] = args.broadcast_mode
+    if args.booth_preset is not None:
+        overrides["booth_preset"] = args.booth_preset
+    if args.pbp_voice is not None:
+        overrides["pbp_voice"] = args.pbp_voice
+    if args.analyst_voice is not None:
+        overrides["analyst_voice"] = args.analyst_voice
+    if args.log_player1 is not None:
+        overrides["log_player1"] = args.log_player1
+    if args.log_player2 is not None:
+        overrides["log_player2"] = args.log_player2
+    if args.relay_listen is not None:
+        overrides["relay_bind"] = args.relay_listen
 
     cfg = config_mod.load(args.config, **overrides)
+
+    # Route validation (S8.7): reject explicitly conflicting source routes
+    # with an actionable error before any thread starts.
+    try:
+        route_info = config_mod.resolve_route(cfg)
+    except config_mod.ConfigConflict as exc:
+        parser = _build_arg_parser()
+        parser.error(str(exc))
+        return 2  # pragma: no cover - parser.error exits
+
+    booth_info = config_mod.resolve_booth(cfg)
+    logger.info("route=%s booth=%s preset=%s pbp=%s analyst=%s",
+                route_info["route"], booth_info["mode"],
+                booth_info.get("preset"), booth_info.get("pbp_voice"),
+                booth_info.get("analyst_voice"))
 
     app = ArenaOnAirApp(cfg,
                         dry_run=args.dry_run,
