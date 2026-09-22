@@ -21,12 +21,18 @@ class SayEngine(TTSEngine):
     def available(self) -> bool:
         return shutil.which("say") is not None
 
-    def synthesize(self, text: str) -> None:
+    def set_voice(self, voice: str) -> None:
+        """Update active macOS voice name."""
+        self.voice = str(voice).strip()
+
+    def synthesize(self, text: str, rate: float = 1.0, voice: str | None = None) -> None:
         cmd = ["say"]
-        if self.voice:
-            cmd += ["-v", self.voice]
-        if self.rate is not None:
-            cmd += ["-r", str(int(self.rate))]
+        active_voice = voice or self.voice
+        if active_voice:
+            cmd += ["-v", active_voice]
+        base_rate = self.rate if self.rate is not None else 185
+        effective_rate = int(base_rate * rate)
+        cmd += ["-r", str(effective_rate)]
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,

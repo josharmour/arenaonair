@@ -37,7 +37,9 @@ from collections import deque
 from typing import Any, Mapping
 
 from . import events as ev
+from .carddb import is_sweeper
 from .models import CardRef, Event, GameState
+from .state_builder import remaining_deck_cards
 
 __all__ = ["StoryModel", "classify_speculation", "DEFAULT_THRESHOLDS", "ARCS"]
 
@@ -222,6 +224,8 @@ def _event(kind: str, seat: int | None, payload: Mapping[str, Any],
         ev.NARRATIVE_RESOURCE: ev.SALIENCE_LOW,
         ev.NARRATIVE_CALLBACK: ev.SALIENCE_LOW,
         ev.NARRATIVE_SPECULATION: ev.SALIENCE_LOW,
+        ev.OUTS_ANTICIPATION: ev.SALIENCE_HIGH,
+        ev.TOPDECK_MODE: ev.SALIENCE_HIGH,
     }.get(kind, ev.SALIENCE_LOW)
     return Event(kind=kind, seat=seat,
                  payload=dict(payload), ts=float(ts), salience=salience)
@@ -331,12 +335,16 @@ class StoryModel:
 
     def __init__(self,
                  thresholds: Mapping[str, float] | None = None,
+                 card_lookup=None,
                  **overrides: Any) -> None:
         cfg: dict[str, Any] = dict(DEFAULT_THRESHOLDS)
         if thresholds:
             cfg.update(dict(thresholds))
         cfg.update(overrides)
         self._th: dict[str, Any] = cfg
+        self.card_lookup = card_lookup
+        self._outs_fired_turn: int | None = None
+        self._topdeck_fired_turns: dict[int, int] = {}
 
         # momentum state
         self._momentum: dict[int | None, float] = {}
@@ -377,6 +385,73 @@ class StoryModel:
 
     # -- internals ----------------------------------------------------------
 
+    def _get_card_info(self, grp_id):
+        if not grp_id:
+            return None
+        if self.card_lookup:
+            try:
+                return self.card_lookup(grp_id)
+            except Exception:
+                return None
+        return None
+
+    def _fold_outs(self, state: GameState, ts: float) -> list[Event]:
+        try:
+            local_seat = getattr(state, "local_seat", None)
+            if local_seat is None:
+                return []
+            if self._outs_fired_turn == self._turn:
+                return []
+
+            lives = _lives(state)
+            my_life = lives.get(local_seat)
+            if not isinstance(my_life, int):
+                return []
+
+            bf = _battlefield_refs(state)
+            creatures = _group_by_controller(bf, _of_type(bf, "creature"))
+            opp_power = 0
+            for s, cr_list in creatures.items():
+                if s != local_seat and s is not None:
+                    opp_power += _power_total(cr_list)
+
+            in_danger = my_life <= 5 or (opp_power >= my_life and opp_power > 0)
+            if not in_danger:
+                return []
+
+            rem = remaining_deck_cards(state)
+            if not rem:
+                return []
+
+            sweepers: list[tuple[str, int]] = []
+            for gid, cnt in rem.items():
+                info = self._get_card_info(gid)
+                name = getattr(info, "name", None) if info else None
+                if name and is_sweeper(name):
+                    sweepers.append((name, cnt))
+
+            if not sweepers:
+                return []
+
+            sweepers.sort(key=lambda x: (-x[1], x[0]))
+            target_name, target_count = sweepers[0]
+            self._outs_fired_turn = self._turn
+            return [_event(
+                ev.OUTS_ANTICIPATION,
+                local_seat,
+                {
+                    "target_name": target_name,
+                    "target_count": target_count,
+                    "card_name": target_name,
+                    "life": my_life,
+                    "opp_power": opp_power,
+                    "detail": f"{my_life} life remaining, drawing to {target_count} {target_name} in deck",
+                },
+                ts,
+            )]
+        except Exception:
+            return []
+
     def _update_inner(self, state: GameState) -> list[Event]:
         if state is None:
             return []
@@ -398,6 +473,12 @@ class StoryModel:
         cand_arc = self._fold_arc(state, ts)
         candidates.extend([(0, e) for e in cand_arc])
 
+        cand_outs = self._fold_outs(state, ts)
+        candidates.extend([(1, e) for e in cand_outs])
+
+        cand_topdeck = self._fold_topdeck_mode(state, ts)
+        candidates.extend([(1, e) for e in cand_topdeck])
+
         cand_cb = self._maybe_callback(ts)
         if cand_cb is not None:
             candidates.append((2, cand_cb))
@@ -409,6 +490,34 @@ class StoryModel:
         # deterministic emission order: arc < resource < callback < speculation
         candidates.sort(key=lambda pair: (pair[0],))
         return [event for _prio, event in candidates]
+
+    def _fold_topdeck_mode(self, state: GameState, ts: float) -> list[Event]:
+        try:
+            active = getattr(getattr(state, "turn_info", None), "active_player", None)
+            if active is None:
+                active = getattr(state, "local_seat", None)
+            if active is None:
+                return []
+            if self._topdeck_fired_turns.get(active) == self._turn:
+                return []
+            hs = _hand_sizes(state)
+            if active not in hs:
+                return []
+            if hs.get(active) == 0:
+                self._topdeck_fired_turns[active] = self._turn
+                return [_event(
+                    ev.TOPDECK_MODE,
+                    active,
+                    {
+                        "hand_size": 0,
+                        "seat": active,
+                        "detail": f"Seat {active} enters topdeck mode with zero cards in hand",
+                    },
+                    ts,
+                )]
+        except Exception:
+            return []
+        return []
 
     def _advance_turn(self, active: int | None) -> None:
         """Close out the previous internal turn and open the next one."""

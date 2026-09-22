@@ -76,6 +76,7 @@ class Config:
     poll_interval: float = 0.5
     anchor: bool = True
     story_thresholds: dict | None = None
+    tts_voice: str | None = None
 
 
 def _coerce_str(value):
@@ -103,6 +104,8 @@ def _sanitize(kwargs: dict) -> dict:
             elif key == "log_path":
                 clean[key] = _coerce_str(value)
             elif key == "tts_platform":
+                clean[key] = _coerce_str(value)
+            elif key == "tts_voice":
                 clean[key] = _coerce_str(value)
             elif key == "carddb_path":
                 clean[key] = _coerce_str(value)

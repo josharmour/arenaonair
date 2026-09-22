@@ -27,6 +27,7 @@ Robustness contract: a malformed or partial payload never raises past
 from __future__ import annotations
 
 import re
+from collections import Counter
 from typing import Any, Callable, Iterable, Mapping
 
 from .models import (
@@ -39,7 +40,7 @@ from .models import (
     ZoneView,
 )
 
-__all__ = ["GameStateBuilder"]
+__all__ = ["GameStateBuilder", "remaining_deck_cards"]
 
 # A callable mapping grpId -> display card name (or None when unknown).
 NameResolver = Callable[[int], "str | None"]
@@ -96,6 +97,32 @@ class _WorkingZone:
         return "%s:%s" % (self.zone_type, owner)
 
 
+def remaining_deck_cards(state: GameState) -> Counter[int]:
+    """Calculate counts of grpIds remaining in the local player's library.
+
+    Subtracts all observed copies belonging to local_seat in:
+    - hand
+    - battlefield
+    - graveyard
+    - stack
+    - exile
+    from state.player_deck.
+    """
+    if not getattr(state, "player_deck", None) or getattr(state, "local_seat", None) is None:
+        return Counter()
+
+    total = Counter(state.player_deck)
+    observed: Counter[int] = Counter()
+    for ref in (state.objects or {}).values():
+        owner = getattr(ref, "owner_seat", None)
+        ctrl = getattr(ref, "controller_seat", None)
+        seat = owner if owner is not None else ctrl
+        if seat == state.local_seat and getattr(ref, "grp_id", None) is not None:
+            observed[ref.grp_id] += 1
+
+    return total - observed
+
+
 class GameStateBuilder:
     """Accumulates GRE messages into immutable GameState snapshots."""
 
@@ -110,6 +137,9 @@ class GameStateBuilder:
         self._meta_match_id = None
         self._meta_format = None
         self._meta_names = {}
+        self._local_seat = None
+        self._player_deck: tuple[int, ...] = ()
+        self._commander_cards: tuple[int, ...] = ()
 
         self._snapshot_seq = 0          # last assigned snapshot_id
         self._last_prev_gre_id = None
@@ -154,6 +184,10 @@ class GameStateBuilder:
                     merged = dict(self._meta_names)
                     merged.update(names)
                     self._meta_names = merged
+                return self._publish(self._last_prev_gre_id)
+
+            if kind == "gre.ConnectResp":
+                self._parse_connect_resp(payload)
                 return self._publish(self._last_prev_gre_id)
 
             if kind == "gre.GameStateMessage":
@@ -221,6 +255,27 @@ class GameStateBuilder:
             if fmt is None and isinstance(rp.get("eventId"), str) and rp["eventId"]:
                 fmt = rp["eventId"]
         return match_id, fmt, names
+
+    def _parse_connect_resp(self, payload):
+        """Extract local_seat, player_deck, and commander_cards from ConnectResp."""
+        if not isinstance(payload, Mapping):
+            return
+        seats = payload.get("systemSeatIds")
+        if isinstance(seats, list) and seats:
+            seat = _as_int(seats[0])
+            if seat is not None:
+                self._local_seat = seat
+
+        cr = payload.get("connectResp")
+        inner = cr if isinstance(cr, Mapping) else payload
+        deck_msg = inner.get("deckMessage")
+        if isinstance(deck_msg, Mapping):
+            deck_cards = deck_msg.get("deckCards")
+            if isinstance(deck_cards, list):
+                self._player_deck = tuple(_as_int(x) for x in deck_cards if _as_int(x) is not None)
+            cmd_cards = deck_msg.get("commanderCards")
+            if isinstance(cmd_cards, list):
+                self._commander_cards = tuple(_as_int(x) for x in cmd_cards if _as_int(x) is not None)
 
     def _fold_game_state(self, gsm):
         if not isinstance(gsm, Mapping):
@@ -426,7 +481,9 @@ class GameStateBuilder:
             players=players_out,
             turn_info=turn_info,
             match_meta=match_meta,
-            local_seat=None,
+            local_seat=self._local_seat,
+            player_deck=self._player_deck,
+            commander_cards=self._commander_cards,
         )
 
     # --------------------------------------------------------------- object views

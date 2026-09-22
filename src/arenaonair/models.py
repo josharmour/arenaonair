@@ -99,7 +99,9 @@ class GameState:
     players: Mapping[int, PlayerView]           # by seat
     turn_info: TurnInfo
     match_meta: MatchMeta
-    local_seat: int | None                      # seat of the person running the client
+    local_seat: int | None = None               # seat of the person running the client
+    player_deck: tuple[int, ...] = ()           # grpIds of local player's submitted deck
+    commander_cards: tuple[int, ...] = ()       # grpIds of local player's commander(s)
 
 
 # --------------------------------------------------------------------------
@@ -129,6 +131,10 @@ class Utterance:
     text: str                                   # final spoken sentence(s)
     salience: int
     ts_created: float
+    tempo: str = "normal"                       # deliberate | normal | fast | frenzy
+    excitement: str = "normal"                  # calm | normal | tense | electric
+    rate: float = 1.0                           # TTS playback speed multiplier
+    voice: str | None = None                    # optional per-utterance voice override
 
 
 @dataclass(frozen=True)

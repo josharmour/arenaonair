@@ -31,11 +31,13 @@ import threading
 import time
 
 from . import config as config_mod
+from . import events as ev
 from .carddb import DEFAULT_DB_PATH, CardDb
 from .differ import EventDiffer
 from .gre_parser import parse_line_all
 from .models import DeliveryResult
 from .narrator import Narrator
+from .pacing import compute_pacing
 from .speech import (
     PRESERVED_KINDS,
     SALIENCE_MUST_SPEAK,
@@ -131,10 +133,13 @@ class ArenaOnAirApp:
             self.carddb = None
             name_resolver = None
 
+        card_lookup = self.carddb.lookup if self.carddb is not None else None
         self.builder = GameStateBuilder(name_resolver=name_resolver)
-        self.differ = EventDiffer()
+        self.differ = EventDiffer(card_lookup=card_lookup)
         self.story = StoryModel(
-            thresholds=self.config.story_thresholds or None)
+            thresholds=self.config.story_thresholds or None,
+            card_lookup=card_lookup,
+        )
         self.narrator = Narrator(window=self.config.window)
         self.queue = SpeechQueue()
 
@@ -151,6 +156,7 @@ class ArenaOnAirApp:
         self._match_id = None
         self._last_utterance = None
         self._last_event_time = 0.0
+        self._last_speech_time = 0.0
         self._last_play_snap_id = None
 
     # ------------------------------------------------------------------
@@ -175,6 +181,7 @@ class ArenaOnAirApp:
                 speaker = build_speaker_chain(
                     platform=self.config.tts_platform,
                     config=chains_cfg,
+                    voice=self.config.tts_voice,
                 )
             self.speaker = speaker
             self.pump = SpeechPump(queue=self.queue, speaker=speaker)
@@ -197,6 +204,12 @@ class ArenaOnAirApp:
             daemon=True,
         )
         self._watch_thread.start()
+
+    def set_voice(self, voice: str) -> None:
+        """Dynamically switch the broadcast voice on the fly."""
+        self.config.tts_voice = str(voice).strip()
+        if self.speaker is not None and hasattr(self.speaker, "set_voice"):
+            self.speaker.set_voice(str(voice).strip())
 
     def stop(self) -> None:
         """Signal both threads to wind down; join them; shut the speaker."""
@@ -378,7 +391,28 @@ class ArenaOnAirApp:
         if not passes_gate(event, self.config.verbosity):
             return
 
-        utt = self.narrator.render(event, snap, tempo=tempo)
+        unspoken_plays = self.queue.play_count(self._match_id)
+        is_busy = bool(self.pump and getattr(self.pump, "current", None) is not None)
+        pacing = compute_pacing(
+            event, snap,
+            story=self.story,
+            queue_backlog=unspoken_plays,
+            is_busy=is_busy,
+        )
+        effective_tempo = tempo if tempo != "normal" else pacing.tempo
+
+        # Cadence regulation: enforce breathing room between routine calls during calm/normal play
+        if not self.once_mode and event.salience < ev.SALIENCE_HIGH and pacing.cadence_gap > 0.0:
+            now = time.monotonic()
+            if self._last_speech_time > 0 and (now - self._last_speech_time) < pacing.cadence_gap:
+                return
+
+        utt = self.narrator.render(
+            event, snap,
+            tempo=effective_tempo,
+            excitement=pacing.excitement,
+            rate=pacing.speech_rate,
+        )
         if utt is None:
             return
 
@@ -403,14 +437,25 @@ class ArenaOnAirApp:
 
             self.queue.enqueue(utt)
             self._last_utterance = utt.text
+            self._last_speech_time = time.monotonic()
             self._await_delivery(utt)
             removed = self.queue.flush(seal_target)
             logger.info("%s sealed match %s (flushed %d)",
                         event.kind, seal_target, removed)
             return
 
+        # Preempt in-flight mundane speech if an electric event arrives
+        if pacing.excitement == "electric" and self.pump and getattr(self.pump, "current", None) is not None:
+            in_flight = getattr(self.pump, "current", None)
+            if in_flight and in_flight.salience < ev.SALIENCE_HIGH:
+                cancellable = getattr(self.pump.speaker, "cancel", None)
+                if callable(cancellable):
+                    logger.info("Preempting mundane speech %s for electric event %s", in_flight.uid, event.kind)
+                    cancellable()
+
         if self.queue.enqueue(utt):
             self._last_utterance = utt.text
+            self._last_speech_time = time.monotonic()
 
     def _await_delivery(self, utt) -> None:
         """Wait until the pump confirms delivery of ``utt`` (bounded)."""
@@ -460,6 +505,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--verbosity", choices=tuple(sorted(VERBOSITY_GATE)),
                         default=None,
                         help="quiet | balanced | detailed")
+    parser.add_argument("--voice", metavar="VOICE", default=None,
+                        help="TTS voice name (e.g. af_heart, am_adam, bm_george)")
+    parser.add_argument("--list-voices", action="store_true",
+                        help="List all available Kokoro default voices and exit")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print utterances to stdout instead of speaking")
     parser.add_argument("--once", action="store_true",
@@ -476,11 +525,24 @@ def main(argv=None) -> int:
     )
     args = _build_arg_parser().parse_args(argv)
 
+    if args.list_voices:
+        from .platform.tts import list_kokoro_voices
+        voices = list_kokoro_voices()
+        print("Available Kokoro Default Voices:")
+        print("=" * 65)
+        for v_name, v_desc in sorted(voices.items()):
+            print(f"  {v_name:<12} : {v_desc}")
+        print("=" * 65)
+        print("Usage: python -m arenaonair.app --voice am_adam")
+        return 0
+
     overrides: dict = {}
     if args.log_path is not None:
         overrides["log_path"] = args.log_path
     if args.verbosity is not None:
         overrides["verbosity"] = args.verbosity
+    if args.voice is not None:
+        overrides["tts_voice"] = args.voice
 
     cfg = config_mod.load(args.config, **overrides)
 

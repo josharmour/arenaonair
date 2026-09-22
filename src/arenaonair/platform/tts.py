@@ -23,12 +23,58 @@ from ..models import DeliveryResult, Utterance
 
 SpeakSource = Union[str, Utterance]
 
+#: Comprehensive catalog of default Kokoro-82M voices
+KOKORO_VOICES: dict[str, str] = {
+    # American Female (af)
+    "af_heart": "American Female - Heart (Default warm broadcast caster)",
+    "af_alloy": "American Female - Alloy",
+    "af_aoede": "American Female - Aoede",
+    "af_bella": "American Female - Bella",
+    "af_jessica": "American Female - Jessica",
+    "af_kore": "American Female - Kore",
+    "af_nicole": "American Female - Nicole",
+    "af_nova": "American Female - Nova",
+    "af_river": "American Female - River",
+    "af_sarah": "American Female - Sarah",
+    "af_sky": "American Female - Sky",
+    # American Male (am)
+    "am_adam": "American Male - Adam (Crisp sports shoutcaster)",
+    "am_echo": "American Male - Echo",
+    "am_eric": "American Male - Eric",
+    "am_fenrir": "American Male - Fenrir",
+    "am_liam": "American Male - Liam",
+    "am_michael": "American Male - Michael",
+    "am_onyx": "American Male - Onyx (Deep radio broadcast)",
+    "am_puck": "American Male - Puck",
+    "am_santa": "American Male - Santa",
+    # British Female (bf)
+    "bf_alice": "British Female - Alice",
+    "bf_emma": "British Female - Emma",
+    "bf_isabella": "British Female - Isabella",
+    "bf_lily": "British Female - Lily",
+    # British Male (bm)
+    "bm_daniel": "British Male - Daniel",
+    "bm_fable": "British Male - Fable",
+    "bm_george": "British Male - George",
+    "bm_lewis": "British Male - Lewis",
+}
 
-def coerce(source: SpeakSource) -> tuple[str, str]:
-    """(text, uid) out of either an Utterance or a bare string."""
+
+def list_kokoro_voices() -> dict[str, str]:
+    """Return dictionary of all default Kokoro voices and descriptions."""
+    return dict(KOKORO_VOICES)
+
+
+def coerce(source: SpeakSource) -> tuple[str, str, float, str | None]:
+    """(text, uid, rate, voice) out of either an Utterance or a bare string."""
     if isinstance(source, Utterance):
-        return source.text, source.uid
-    return str(source), ""
+        return (
+            source.text,
+            source.uid,
+            float(getattr(source, "rate", 1.0) or 1.0),
+            getattr(source, "voice", None),
+        )
+    return str(source), "", 1.0, None
 
 
 class TTSEngine:
@@ -40,9 +86,15 @@ class TTSEngine:
         raise NotImplementedError
 
     def speak(self, source: SpeakSource) -> DeliveryResult:
-        text, uid = coerce(source)
+        text, uid, rate, voice = coerce(source)
         try:
-            self.synthesize(text)
+            try:
+                self.synthesize(text, rate=rate, voice=voice)
+            except TypeError:
+                try:
+                    self.synthesize(text, rate=rate)
+                except TypeError:
+                    self.synthesize(text)
         except Exception as exc:  # engines never raise past the caller
             return DeliveryResult(
                 uid=uid,
@@ -51,7 +103,7 @@ class TTSEngine:
             )
         return DeliveryResult(uid=uid, ok=True)
 
-    def synthesize(self, text: str) -> None:
+    def synthesize(self, text: str, rate: float = 1.0, voice: str | None = None) -> None:
         """Blocking synthesis of one utterance; raise on any failure."""
         raise NotImplementedError
 
@@ -93,6 +145,10 @@ class KokoroEngine(TTSEngine):
     def available(self) -> bool:
         return importlib.util.find_spec("kokoro") is not None
 
+    def set_voice(self, voice: str) -> None:
+        """Update active voice name (e.g. 'af_heart', 'am_adam', 'bm_george')."""
+        self.voice = str(voice).strip()
+
     # -- synthesis ---------------------------------------------------------
 
     def _get_pipeline(self):
@@ -103,12 +159,14 @@ class KokoroEngine(TTSEngine):
                                        device=self.device)
         return self._pipeline
 
-    def _synthesize_pcm(self, text: str):
+    def _synthesize_pcm(self, text: str, rate: float = 1.0, voice: str | None = None):
         """Yield (numpy_float32_array, sample_rate) chunks for ``text``."""
         import numpy as np
 
         pipe = self._get_pipeline()
-        for chunk in pipe(text, voice=self.voice, speed=self.speed):
+        effective_speed = max(0.5, min(2.0, self.speed * rate))
+        active_voice = voice or self.voice
+        for chunk in pipe(text, voice=active_voice, speed=effective_speed):
             if self._cancel_flag:
                 return
             audio = getattr(chunk, "audio", None)
@@ -199,9 +257,9 @@ class KokoroEngine(TTSEngine):
 
     # -- TTSEngine surface ---------------------------------------------------
 
-    def synthesize(self, text: str) -> None:
+    def synthesize(self, text: str, rate: float = 1.0, voice: str | None = None) -> None:
         chunks_played = 0
-        for pcm, sr in self._synthesize_pcm(text):
+        for pcm, sr in self._synthesize_pcm(text, rate=rate, voice=voice):
             self._play_chunk(pcm, sr)
             chunks_played += 1
         if chunks_played == 0 and not self._cancel_flag:

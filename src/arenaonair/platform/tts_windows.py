@@ -25,11 +25,13 @@ class SapiEngine(TTSEngine):
             return False
         return shutil.which("powershell.exe") is not None
 
-    def synthesize(self, text: str) -> None:
+    def synthesize(self, text: str, rate: float = 1.0) -> None:
+        rate_offset = int((rate - 1.0) * 8)
+        sapi_rate = max(-10, min(10, self.rate + rate_offset))
         ps_script = (
             "Add-Type -AssemblyName System.Speech; "
             "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-            f"$s.Rate={int(self.rate)}; "
+            f"$s.Rate={sapi_rate}; "
             "$s.Speak([Console]::In.ReadToEnd())"
         )
         cmd = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_script]

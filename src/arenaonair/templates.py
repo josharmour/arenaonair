@@ -392,6 +392,85 @@ TEMPLATE_POOLS = {
         # OPPONENT-RELATIONAL framing
         "Handoff complete -- {opp} watches {actor} work.",
     ],
+
+    ev.GRAVEYARD_RECURSION: [
+        # ACTOR-FIRST
+        "{actor} pulls {card_name} right out of the graveyard.",
+        # CARD-FIRST
+        "{card_name} comes back from the graveyard for {actor}.",
+        # VALUE FRAMING
+        "Recursion value: {card_name} rises from the yard for {actor}.",
+        # COLOR
+        "Not dead yet -- {card_name} returning to play for {actor}.",
+        # ASIDE
+        "{actor} recurs {card_name} from the bin.",
+        # DRAMA
+        "Second chapter for {card_name} as {actor} brings it back.",
+    ],
+    ev.COUNTER_WAR: [
+        # CONSEQUENCE-FIRST
+        "A full-blown counter-war erupts on the stack over {card_name}!",
+        # ACTOR-FIRST
+        "{actor} answers the counter as the stack reaches {depth} spells deep.",
+        # DRAMA-FORWARD
+        "Spells fly back and forth with both sides battling for {card_name}.",
+        # TENSION
+        "Neither player yields -- the stack is blazing with {depth} responses.",
+        # ASIDE
+        "Stack battle royale underway; {card_name} hangs in the balance.",
+        # COLOR
+        "Total counter frenzy on the wire over {card_name}!",
+        # STAT-FORWARD
+        "{depth} spells clash on the stack in an all-out counter war.",
+    ],
+    ev.COMBAT_TRICK: [
+        # ACTOR-FIRST
+        "{actor} unleashes a mid-combat surprise with {card}!",
+        # ACTION-FORWARD
+        "Combat trick deployed -- {card} flips the math entirely.",
+        # RED-ZONE
+        "Right into the red zone comes {card} from {actor}.",
+        # CONSEQUENCE-FIRST
+        "Sudden twist in combat as {card} hits the stack.",
+        # ASIDE
+        "Sneaky instant from {actor}: {card} alters the battlefield.",
+        # DRAMA
+        "Surprise maneuver! {actor} turns combat on its head with {card}.",
+        # CARD-FIRST
+        "{card} arrives during combat to rewrite the engagement.",
+    ],
+    ev.CHUMP_BLOCK: [
+        # ACTOR-FIRST
+        "{actor} throws {blocker_name} under the bus to absorb {attacker_name}.",
+        # CLASSIC-CALL
+        "Classic chump block -- {blocker_name} buys precious time against {attacker_name}.",
+        # SACRIFICE
+        "Sacrificial defense from {actor}: {blocker_name} steps in front of {attacker_name}.",
+        # CONSEQUENCE-FIRST
+        "{blocker_name} takes one for the team, absorbing the blow from {attacker_name}.",
+        # DRAMA
+        "Desperate times call for chumps -- {actor} feeds {blocker_name} to {attacker_name}.",
+        # BODIES
+        "Bodies on the line as {blocker_name} steps up against {attacker_name}.",
+        # COLOR
+        "A chump block from {actor} spares their life total for now.",
+    ],
+    ev.UNFAIR_PLAY: [
+        # ACTOR-FIRST
+        "{actor} cheats out {card_name} way ahead of schedule on turn {turn}!",
+        # FORMAT-CALL
+        "Unfair Magic in full effect -- {card_name} crashes down on turn {turn}.",
+        # DISBELIEF
+        "How is {card_name} already in play? That is a massive turn {turn} bomb.",
+        # DANGER-FORWARD
+        "Alarm bells ringing for {opp} as {actor} lands {card_name} on turn {turn}.",
+        # MANA-FORWARD
+        "Bypassing the mana curve entirely: {actor} delivers {card_name} on turn {turn}.",
+        # COLOR
+        "Early monster alert -- {card_name} enters the fray turns before it should.",
+        # CARD-FIRST
+        "{card_name} hits the battlefield lightyears ahead of the curve.",
+    ],
 }
 
 
@@ -512,6 +591,46 @@ TEMPLATE_SHORT_POOLS = {
         "Pendulum swings.",
         "Handoff.",
     ],
+    ev.GRAVEYARD_RECURSION: [
+        "{card_name} back from the yard.",
+        "{actor} recurs {card_name}.",
+        "{card_name} returned.",
+        "From the bin: {card_name}.",
+        "{card_name} returns.",
+        "{actor} retrieves {card_name}.",
+    ],
+    ev.COUNTER_WAR: [
+        "Counter-war underway!",
+        "Stack fight!",
+        "Fighting on the stack.",
+        "{depth} spells deep.",
+        "Counters flying!",
+        "Battle on the stack.",
+    ],
+    ev.COMBAT_TRICK: [
+        "Combat trick: {card}.",
+        "Trick in combat!",
+        "{card} mid-combat.",
+        "Surprise instant.",
+        "Combat ambush with {card}.",
+        "Combat math shifted.",
+    ],
+    ev.CHUMP_BLOCK: [
+        "Chump block.",
+        "{blocker_name} chumps.",
+        "Sacrificial block.",
+        "Buying time with {blocker_name}.",
+        "Chumped by {blocker_name}.",
+        "Feeding {blocker_name} to the beast.",
+    ],
+    ev.UNFAIR_PLAY: [
+        "Unfair {card_name} on turn {turn}!",
+        "Cheating out {card_name}.",
+        "Turn {turn} bomb!",
+        "Ahead of schedule: {card_name}.",
+        "Massive early drop: {card_name}.",
+        "Mana curve shattered.",
+    ],
 }
 
 # ---------------------------------------------------------------------------
@@ -574,6 +693,94 @@ NARRATIVE_POOLS = {
             "{leader_actor} eyes a opening here{spec_tail}",
             # STAT-FWD race framing
             "{spec_stat_clause}",
+    ],
+    ev.HAND_ONLINE: [
+        # ACTOR-FIRST
+        "{actor} hits {land_count} lands -- {card_name} is officially live in hand.",
+        # MILESTONE
+        "Curve milestone reached: {card_name} unlocked for {actor}.",
+        # MANA-FORWARD
+        "{card_name} now playable for {actor} with {land_count} mana online.",
+        # COLOR
+        "Green light on {card_name} in {actor}'s hand.",
+        # TENSION
+        "{actor} reaches {land_count} lands -- {card_name} waiting in the wings.",
+        # ASIDE
+        "{card_name} in hand just found the mana it needs.",
+    ],
+    ev.TUTOR_ANTICIPATION: [
+        # STACK-FORWARD
+        "{card_name} on the stack -- {target_count} copies of {target_name} remain in the library.",
+        # SEARCH-FORWARD
+        "{actor} searches the library with {card_name}; looking for {target_name}.",
+        # INTENT
+        "Tutor time: {card_name} digging deep into {actor}'s deck.",
+        # ACTION-FORWARD
+        "{card_name} cast -- {actor} reaching into the deck for {target_name}.",
+        # STAT-FORWARD
+        "Tutor on the wire -- {actor} has {target_count} {target_name} left to choose from.",
+        # COLOR
+        "{actor} calls upon {card_name} to locate an answer.",
+    ],
+    ev.OUTS_ANTICIPATION: [
+        # PRESSURE-FORWARD
+        "{actor} under lethal pressure, digging for {target_count} {target_name} left in the deck.",
+        # CRITICAL-LIFE
+        "Life total in critical territory -- {actor} drawing to {target_count} {target_name}.",
+        # WALL-AGAINST-BACK
+        "Back against the wall for {actor}: {target_count} copies of {target_name} remain as outs.",
+        # URGENCY
+        "{actor} needs to hit an answer here -- {target_count} {target_name} still in the library.",
+        # SWEEPER-WATCH
+        "Answer watch: {actor} searching for {target_count} remaining {target_name}.",
+        # PIVOTAL
+        "Pivotal draw step for {actor} with {target_count} {target_name} left to survive.",
+    ],
+    ev.ARCHETYPE_DETECTED: [
+        # SIGNATURE-FORWARD
+        "Early {signature_card} from {actor} -- looks like {archetype_name} today.",
+        # CONFIRMED
+        "Archetype confirmed: {actor} is on {archetype_name}.",
+        # TELL
+        "{signature_card} gives it away -- {actor} running {archetype_name}.",
+        # ACROSS-THE-TABLE
+        "That's {archetype_name} across the table for {actor}.",
+        # IDENTITY
+        "{actor}'s deck identity revealed: {archetype_name} in action.",
+        # GAMEPLAN
+        "The gameplan is clear -- {actor} piloting {archetype_name}.",
+    ],
+    ev.TOPDECK_MODE: [
+        # ACTOR-FIRST
+        "{actor} is completely empty-handed -- officially in topdeck mode.",
+        # TOP-OF-DECK
+        "Living off the top of the deck now for {actor}.",
+        # DO-OR-DIE
+        "Zero cards in hand for {actor}; every draw step is do-or-die.",
+        # TANK-EMPTY
+        "The tank is empty -- {actor} relying purely on topdeck luck from here.",
+        # COLOR
+        "Ripping off the top! {actor} enters topdeck territory.",
+        # ASIDE
+        "No safety net remaining -- {actor} playing off the top of the library.",
+        # STAT-FORWARD
+        "{actor} hits zero cards -- topdeck mode activated.",
+    ],
+    ev.HAND_SCULPTING: [
+        # ACTOR-FIRST
+        "{actor} is deep in the tank, sculpting the hand with multiple cantrips.",
+        # VELOCITY
+        "Filtering through the deck -- {actor} chains cantrips to set up future turns.",
+        # PROGRESS
+        "Hand sculpting in progress as {actor} cycles through cards this turn.",
+        # INTENT
+        "Digging for pieces: {actor} lines up resources with back-to-back cantrips.",
+        # METAPHOR
+        "Blueprint under construction -- {actor} polishes the hand looking for answers.",
+        # VELOCITY-ALT
+        "Velocity turn for {actor}, cycling through the library to sculpt the grip.",
+        # ASIDE
+        "{actor} sculpts the hand with rapid-fire card selection.",
     ],
 }
 

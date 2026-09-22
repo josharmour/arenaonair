@@ -24,13 +24,15 @@ class PiperEngine(TTSEngine):
             return False
         return bool(self.model_dir)
 
-    def synthesize(self, text: str) -> None:
+    def synthesize(self, text: str, rate: float = 1.0) -> None:
         if not self.model_dir:
             raise RuntimeError("piper: no model dir configured")
         model = os.path.join(self.model_dir, f"{self.voice or 'default'}.onnx")
         if not os.path.isfile(model):
             raise RuntimeError(f"piper: model not found: {model}")
-        cmd = ["piper", "--model", model, "--output_file", "/dev/null"]
+        length_scale = max(0.5, min(2.0, 1.0 / rate))
+        cmd = ["piper", "--model", model, "--output_file", "/dev/null",
+               "--length_scale", f"{length_scale:.2f}"]
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -63,10 +65,10 @@ class EspeakNgEngine(TTSEngine):
     def available(self) -> bool:
         return shutil.which("espeak-ng") is not None
 
-    def synthesize(self, text: str) -> None:
+    def synthesize(self, text: str, rate: float = 1.0) -> None:
         cmd = [
             "espeak-ng",
-            "-s", str(int(self.rate)),
+            "-s", str(int(self.rate * rate)),
             "-p", str(int(self.pitch)),
             "--stdin",
         ]

@@ -27,17 +27,43 @@ NARRATIVE_RESOURCE = "narrative_resource"  # flood/screw streaks, hand pressure
 NARRATIVE_CALLBACK = "narrative_callback"  # reference to an earlier beat
 NARRATIVE_SPECULATION = "narrative_speculation"  # framed anticipation
 
+# Proactive strategic / anticipatory kinds
+HAND_ONLINE = "hand_online"                # card in hand becomes castable as mana milestone is reached
+TUTOR_ANTICIPATION = "tutor_anticipation"  # tutor held/cast, referencing candidate targets in deck
+OUTS_ANTICIPATION = "outs_anticipation"    # trailing/lethal pressure, calculating answers in deck
+ARCHETYPE_DETECTED = "archetype_detected"  # opponent deck fingerprinted from early plays/companion
+GRAVEYARD_RECURSION = "graveyard_recursion"  # card cast or returned from the graveyard
+
+# Tactical shoutcaster kinds
+COUNTER_WAR = "counter_war"                # rapid chain of counterspells/responses battling on stack
+COMBAT_TRICK = "combat_trick"              # instant-speed buff/trick deployed during combat
+CHUMP_BLOCK = "chump_block"                # sacrificial block to absorb heavy attacker
+TOPDECK_MODE = "topdeck_mode"              # active player at zero cards in hand drawing off the top
+HAND_SCULPTING = "hand_sculpting"          # multiple cantrips/filtering spells cast to set up future turns
+UNFAIR_PLAY = "unfair_play"                # high-CMC bomb cheated into play turns ahead of schedule
+
 PLAY_BY_PLAY_KINDS = frozenset({
     MATCH_START, MATCH_END, GAME_START, GAME_END, LAND_DROP, CAST, RESOLVE,
     COUNTER, ATTACK_DECLARED, BLOCK_DECLARED, COMBAT_DAMAGE, LIFE_CHANGE,
-    BOARD_SHIFT, TURN_START,
+    BOARD_SHIFT, TURN_START, GRAVEYARD_RECURSION,
+    COUNTER_WAR, COMBAT_TRICK, CHUMP_BLOCK, UNFAIR_PLAY,
 })
 
 NARRATIVE_KINDS = frozenset({
     NARRATIVE_ARC, NARRATIVE_RESOURCE, NARRATIVE_CALLBACK, NARRATIVE_SPECULATION,
+    HAND_ONLINE, TUTOR_ANTICIPATION, OUTS_ANTICIPATION, ARCHETYPE_DETECTED,
+    TOPDECK_MODE, HAND_SCULPTING,
 })
 
 ALL_KINDS = PLAY_BY_PLAY_KINDS | NARRATIVE_KINDS
+
+#: Anchor milestone events exempt from aggressive pruning or short-pool abbreviations
+PRESERVED_KINDS = frozenset({
+    MATCH_START,
+    MATCH_END,
+    GAME_START,
+    GAME_END,
+})
 
 # Salience scale
 SALIENCE_FILLER = 0        # detailed-verbosity only

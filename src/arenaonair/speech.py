@@ -308,6 +308,7 @@ def detect_platform(platform: str | None = None) -> str:
 def build_speaker_chain(
     platform: str | None = None,
     config: dict | None = None,
+    voice: str | None = None,
 ) -> Speaker:
     """Build the first AVAILABLE engine for this platform as a Speaker.
 
@@ -324,11 +325,14 @@ def build_speaker_chain(
 
     from .platform.tts import load_engine_class
 
+    effective_voice = voice or cfg.get("tts_voice") or cfg.get("voice")
     tried: list[str] = []
     for name in chain_names:
         cls = load_engine_class(name)
         engines_cfg = cfg.get("engines") or {}
-        kwargs = engines_cfg.get(name) or {} if isinstance(engines_cfg, dict) else {}
+        kwargs = dict(engines_cfg.get(name) or {} if isinstance(engines_cfg, dict) else {})
+        if effective_voice and "voice" not in kwargs:
+            kwargs["voice"] = effective_voice
         try:
             engine = cls(**kwargs)
             ok = bool(engine.available())
@@ -355,6 +359,12 @@ class EngineSpeaker:
 
     def speak(self, utterance: Utterance) -> DeliveryResult:
         return self.engine.speak(utterance)
+
+    def set_voice(self, voice: str) -> None:
+        if hasattr(self.engine, "set_voice"):
+            self.engine.set_voice(voice)
+        elif hasattr(self.engine, "voice"):
+            self.engine.voice = voice
 
     def cancel(self) -> None:
         self.engine.cancel()
@@ -385,6 +395,13 @@ class ChainedSpeaker:
     def engine(self):
         """Currently active engine (for diagnostics/tests)."""
         return self.engines[self._active]
+
+    def set_voice(self, voice: str) -> None:
+        for eng in self.engines:
+            if hasattr(eng, "set_voice"):
+                eng.set_voice(voice)
+            elif hasattr(eng, "voice"):
+                eng.voice = voice
 
     def speak(self, utterance: Utterance) -> DeliveryResult:
         reasons: list[str] = []

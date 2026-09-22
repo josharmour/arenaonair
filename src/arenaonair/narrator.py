@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import random
 import zlib
-from typing import Any
+from typing import Any, Mapping
 
 from . import events as ev
 from . import templates as tpl
@@ -71,10 +71,11 @@ class Narrator:
     # Public API
     # ------------------------------------------------------------------
 
-    def render(self, event: Event, state: GameState | None, tempo: str = "normal"):
+    def render(self, event: Event, state: GameState | None, tempo: str = "normal",
+               excitement: str = "normal", rate: float = 1.0):
         """Event (+optional state) -> Utterance | None. Never raises."""
         try:
-            return self._render_inner(event, state, tempo=tempo)
+            return self._render_inner(event, state, tempo=tempo, excitement=excitement, rate=rate)
         except Exception:
             return None
 
@@ -87,18 +88,19 @@ class Narrator:
     # Core pipeline
     # ------------------------------------------------------------------
 
-    def _render_inner(self, event, state, tempo: str = "normal"):
+    def _render_inner(self, event, state, tempo: str = "normal",
+                      excitement: str = "normal", rate: float = 1.0):
         if event is None:
             return None
         kind = getattr(event, "kind", None)
         if not isinstance(kind, str) or kind not in ev.ALL_KINDS:
             return None
 
-        # Fast-tempo discipline:
-        # 1. Silence low-salience events (< SALIENCE_HIGH) during fast tempo,
+        # Fast/frenzy-tempo discipline:
+        # 1. Silence low-salience events (< SALIENCE_HIGH) during fast/frenzy tempo,
         #    preserving critical events (game_end, match_start, etc.).
         salience = int(getattr(event, "salience", 0) or 0)
-        if tempo == "fast" and salience < ev.SALIENCE_HIGH:
+        if tempo in ("fast", "frenzy") and salience < ev.SALIENCE_HIGH:
             return None
 
         pool = tpl.TEMPLATE_POOLS.get(kind) or tpl.NARRATIVE_POOLS.get(kind)
@@ -123,8 +125,9 @@ class Narrator:
             self._streak_count[kind] = 1
 
         family = "full"
-        if (tempo == "fast" or self._streak_count[kind] >= 2) and short_pool:
-            family = "short"
+        if kind not in ev.PRESERVED_KINDS:
+            if (tempo in ("fast", "frenzy") or self._streak_count[kind] >= 2) and short_pool:
+                family = "short"
         if (self._streak_count[kind] >= 3
                 and getattr(event, "salience", 0) < ev.SALIENCE_HIGH):
             return None               # silent acknowledgment
@@ -162,6 +165,8 @@ class Narrator:
         self._last_shape = shape
 
         text = self._polish(text)
+        if excitement in ("tense", "electric") and text.endswith("."):
+            text = text[:-1] + "!"
         self._last_kind = self._pending_kind
 
         # --- utterance ----------------------------------------------------------
@@ -174,6 +179,9 @@ class Narrator:
             text=text.strip(),
             salience=int(getattr(event, "salience", ev.SALIENCE_LOW) or 0),
             ts_created=float(getattr(event, "ts", 0.0) or 0.0),
+            tempo=tempo,
+            excitement=excitement,
+            rate=float(rate),
         )
 
     # ------------------------------------------------------------------
@@ -513,6 +521,14 @@ class Narrator:
 
         # --- narrative-kind slots ---------------------------------------------------
         slots.update(self._narrative_slots(kind, payload, state))
+
+        # Forward payload keys so specific event payloads populate slots
+        if isinstance(payload, Mapping):
+            for k, v in payload.items():
+                if k not in slots or slots[k] in ("", None):
+                    slots[k] = v
+        if "card_name" not in slots or not slots["card_name"]:
+            slots["card_name"] = slots.get("card", "")
 
         return slots
 

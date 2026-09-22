@@ -17,7 +17,18 @@ from __future__ import annotations
 from typing import Any, Iterable, Mapping
 
 from . import events as ev
+from .carddb import (
+    calculate_cmc,
+    detect_archetype,
+    is_bomb,
+    is_cantrip_or_filter,
+    is_combat_trick,
+    is_counterspell,
+    is_sweeper,
+    is_tutor,
+)
 from .models import Event, GameState, GreMessage
+from .state_builder import remaining_deck_cards
 
 __all__ = ["EventDiffer", "DEFAULT_DIFFER_CONFIG", "life_salience"]
 
@@ -200,12 +211,13 @@ class EventDiffer:
     DEFAULT_DIFFER_CONFIG.
     """
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, card_lookup=None):
         self.cfg = dict(DEFAULT_DIFFER_CONFIG)
         try:
             self.cfg.update(dict(config or {}))
         except Exception:
             pass
+        self.card_lookup = card_lookup
         # Cross-window dedupe / continuity state
         self._seen_casts = set()          # (instanceId, seatId) tuples
         self._last_match_id = None
@@ -213,6 +225,16 @@ class EventDiffer:
         self._baseline_creatures = None   # seat -> count at match start
         self._baseline_power = None       # seat -> summed power at match start
         self._window_msgs = []            # set per diff() call
+        self._seen_hand_online = set()    # (match_id, grp_id) tuples
+        self._detected_archetypes = set() # (match_id, seat) tuples
+        self._seen_tutors_cast = set()    # instanceId set
+        self._seen_graveyard_recursions = set()  # instanceId set
+        self._cards_played_by_seat = {}   # seat -> set of card names
+        self._seen_combat_tricks = set()  # instanceId set
+        self._seen_chump_blocks = set()   # (match_id, blocker_id, attacker_id) set
+        self._seen_unfair_plays = set()   # instanceId set
+        self._seen_counter_wars = set()   # (match_id, top_stack_id) set
+        self._cantrips_cast_this_turn = {} # (turn, seat) -> list of names
 
     # ------------------------------------------------------------------ API
 
@@ -238,6 +260,15 @@ class EventDiffer:
         events.extend(self.detect_life_change(prev, cur))
         events.extend(self.detect_board_shift(prev, cur))
         events.extend(self.detect_match_start_end(prev, cur))
+        events.extend(self.detect_hand_online(prev, cur))
+        events.extend(self.detect_tutor_anticipation(prev, cur))
+        events.extend(self.detect_graveyard_recursion(prev, cur))
+        events.extend(self.detect_archetype(prev, cur))
+        events.extend(self.detect_counter_war(prev, cur))
+        events.extend(self.detect_combat_trick(prev, cur))
+        events.extend(self.detect_chump_block(prev, cur))
+        events.extend(self.detect_hand_sculpting(prev, cur))
+        events.extend(self.detect_unfair_play(prev, cur))
 
         base_ts = getattr(cur, "ts", None)
         stamped = []
@@ -907,6 +938,479 @@ class EventDiffer:
                                      ts=getattr(msg, "ts", ts_base),
                                      salience=ev.SALIENCE_MUST_SPEAK))
                     break
+            return out
+        except Exception:
+            return []
+
+    def _get_card_info(self, grp_id):
+        if not grp_id:
+            return None
+        if self.card_lookup:
+            try:
+                return self.card_lookup(grp_id)
+            except Exception:
+                return None
+        return None
+
+    def _land_count_for_seat(self, state, seat):
+        if not state:
+            return 0
+        bf_ids = _zone_object_ids(state, ("battlefield",))
+        count = 0
+        for iid in bf_ids:
+            ref = (getattr(state, "objects", None) or {}).get(iid)
+            if not ref:
+                continue
+            owner = getattr(ref, "controller_seat", None)
+            if owner is None:
+                owner = getattr(ref, "owner_seat", None)
+            if owner == seat and "land" in (getattr(ref, "card_types", ()) or ()):
+                count += 1
+        return count
+
+    def detect_hand_online(self, prev, cur):
+        """When local player's land count increases, detect cards in hand reaching playable mana threshold."""
+        try:
+            local_seat = getattr(cur, "local_seat", None)
+            if local_seat is None:
+                return []
+            match_id = getattr(getattr(cur, "match_meta", None), "match_id", None) or "local"
+
+            prev_lands = self._land_count_for_seat(prev, local_seat)
+            cur_lands = self._land_count_for_seat(cur, local_seat)
+            if cur_lands <= prev_lands or cur_lands < 2:
+                return []
+
+            hand_zone = None
+            for zv in (getattr(cur, "zones", None) or {}).values():
+                if _norm_zone_type(getattr(zv, "zone_type", "")) == "hand" and getattr(zv, "owner_seat", None) == local_seat:
+                    hand_zone = zv
+                    break
+            if not hand_zone or not getattr(hand_zone, "object_ids", ()):
+                return []
+
+            out = []
+            ts_base = getattr(cur, "ts", 0.0) or 0.0
+            for iid in hand_zone.object_ids:
+                ref = (getattr(cur, "objects", None) or {}).get(iid)
+                if not ref:
+                    continue
+                grp_id = getattr(ref, "grp_id", None)
+                if grp_id is None or (match_id, grp_id) in self._seen_hand_online:
+                    continue
+
+                info = self._get_card_info(grp_id)
+                name = getattr(ref, "name", None) or (getattr(info, "name", None) if info else None)
+                if not name:
+                    continue
+
+                if "land" in (getattr(ref, "card_types", ()) or ()):
+                    continue
+
+                mana_cost = getattr(info, "mana_cost", "") if info else ""
+                cmc = calculate_cmc(mana_cost)
+                if cmc <= 0:
+                    continue
+
+                if prev_lands < cmc <= cur_lands:
+                    is_notable = (info and (is_bomb(info) or is_sweeper(name) or is_tutor(name))) or cmc >= 3
+                    if is_notable:
+                        self._seen_hand_online.add((match_id, grp_id))
+                        salience = ev.SALIENCE_HIGH if (info and is_bomb(info)) else ev.SALIENCE_LOW
+                        out.append(Event(
+                            kind=ev.HAND_ONLINE,
+                            seat=local_seat,
+                            payload={
+                                "card_name": name,
+                                "name": name,
+                                "land_count": cur_lands,
+                                "cmc": cmc,
+                            },
+                            ts=ts_base,
+                            salience=salience,
+                        ))
+                        break
+            return out
+        except Exception:
+            return []
+
+    def detect_tutor_anticipation(self, prev, cur):
+        """When a tutor is cast onto the stack, identify prime targets remaining in the library."""
+        try:
+            prev_stack = _zone_object_ids(prev, ("stack",))
+            cur_stack = _zone_object_ids(cur, ("stack",))
+            new_ids = sorted(cur_stack - prev_stack)
+            if not new_ids:
+                return []
+
+            out = []
+            ts_base = getattr(cur, "ts", 0.0) or 0.0
+            idx = 0
+            for iid in new_ids:
+                if iid in self._seen_tutors_cast:
+                    continue
+                ref = (getattr(cur, "objects", None) or {}).get(iid)
+                if not ref:
+                    continue
+                name = getattr(ref, "name", None)
+                if not name or not is_tutor(name):
+                    continue
+                self._seen_tutors_cast.add(iid)
+                seat = getattr(ref, "controller_seat", None) or getattr(ref, "owner_seat", None)
+
+                target_name = "key answer"
+                target_count = 1
+                if seat == getattr(cur, "local_seat", None):
+                    rem = remaining_deck_cards(cur)
+                    if rem:
+                        candidates: list[tuple[str, int, int]] = []
+                        for gid, cnt in rem.items():
+                            info = self._get_card_info(gid)
+                            cname = getattr(info, "name", None) if info else None
+                            if not cname:
+                                continue
+                            prio = 1
+                            if is_sweeper(cname):
+                                prio = 3
+                            elif info and is_bomb(info):
+                                prio = 2
+                            candidates.append((cname, cnt, prio))
+                        if candidates:
+                            candidates.sort(key=lambda c: (-c[2], -c[1], c[0]))
+                            target_name, target_count, _ = candidates[0]
+
+                out.append(Event(
+                    kind=ev.TUTOR_ANTICIPATION,
+                    seat=seat,
+                    payload={
+                        "card_name": name,
+                        "name": name,
+                        "target_name": target_name,
+                        "target_count": target_count,
+                    },
+                    ts=ts_base + idx * 0.01,
+                    salience=ev.SALIENCE_HIGH,
+                ))
+                idx += 1
+            return out
+        except Exception:
+            return []
+
+    def detect_graveyard_recursion(self, prev, cur):
+        """Detect objects moving from graveyard to stack or battlefield."""
+        try:
+            if not prev or not cur:
+                return []
+            prev_gy = _zone_object_ids(prev, ("graveyard",))
+            cur_active = _zone_object_ids(cur, ("stack", "battlefield"))
+            recursed = sorted(prev_gy & cur_active)
+            if not recursed:
+                return []
+            out = []
+            ts_base = getattr(cur, "ts", 0.0) or 0.0
+            idx = 0
+            for iid in recursed:
+                if iid in self._seen_graveyard_recursions:
+                    continue
+                self._seen_graveyard_recursions.add(iid)
+                ref = (getattr(cur, "objects", None) or {}).get(iid) or (getattr(prev, "objects", None) or {}).get(iid)
+                name = getattr(ref, "name", None)
+                if not name:
+                    continue
+                seat = getattr(ref, "controller_seat", None) or getattr(ref, "owner_seat", None)
+                out.append(Event(
+                    kind=ev.GRAVEYARD_RECURSION,
+                    seat=seat,
+                    payload={
+                        "card_name": name,
+                        "name": name,
+                    },
+                    ts=ts_base + idx * 0.01,
+                    salience=ev.SALIENCE_HIGH,
+                ))
+                idx += 1
+            return out
+        except Exception:
+            return []
+
+    def detect_archetype(self, prev, cur):
+        """Fingerprint competitive archetype from early played cards or companion."""
+        try:
+            match_id = getattr(getattr(cur, "match_meta", None), "match_id", None) or "local"
+            prev_bf = _zone_object_ids(prev, ("battlefield",))
+            cur_bf = _zone_object_ids(cur, ("battlefield",))
+            new_bf = sorted(cur_bf - prev_bf)
+
+            for iid in new_bf:
+                ref = (getattr(cur, "objects", None) or {}).get(iid)
+                if not ref:
+                    continue
+                name = getattr(ref, "name", None)
+                seat = getattr(ref, "controller_seat", None) or getattr(ref, "owner_seat", None)
+                if name and seat is not None:
+                    self._cards_played_by_seat.setdefault(seat, set()).add(name)
+
+            out = []
+            ts_base = getattr(cur, "ts", 0.0) or 0.0
+            idx = 0
+            for seat, played_cards in list(self._cards_played_by_seat.items()):
+                if (match_id, seat) in self._detected_archetypes:
+                    continue
+                archetype = detect_archetype(played_cards)
+                if archetype:
+                    self._detected_archetypes.add((match_id, seat))
+                    sig_card = sorted(played_cards)[0]
+                    out.append(Event(
+                        kind=ev.ARCHETYPE_DETECTED,
+                        seat=seat,
+                        payload={
+                            "archetype_name": archetype,
+                            "signature_card": sig_card,
+                        },
+                        ts=ts_base + idx * 0.01,
+                        salience=ev.SALIENCE_HIGH,
+                    ))
+                    idx += 1
+            return out
+        except Exception:
+            return []
+
+    def detect_counter_war(self, prev, cur):
+        """Detect when multiple counterspells/instants fight across the stack."""
+        try:
+            match_id = getattr(getattr(cur, "match_meta", None), "match_id", None) or "local"
+            cur_stack = _zone_object_ids(cur, ("stack",))
+            if len(cur_stack) < 2:
+                return []
+
+            counter_names = []
+            top_iid = None
+            bottom_name = "spell"
+            for idx, iid in enumerate(sorted(cur_stack)):
+                ref = (getattr(cur, "objects", None) or {}).get(iid)
+                if not ref:
+                    continue
+                name = getattr(ref, "name", None)
+                if idx == 0 and name:
+                    bottom_name = name
+                top_iid = iid
+                if name and is_counterspell(name):
+                    counter_names.append(name)
+
+            if len(counter_names) >= 2 or (len(cur_stack) >= 3 and len(counter_names) >= 1):
+                key = (match_id, top_iid)
+                if key not in self._seen_counter_wars:
+                    self._seen_counter_wars.add(key)
+                    ts_base = getattr(cur, "ts", 0.0) or 0.0
+                    return [Event(
+                        kind=ev.COUNTER_WAR,
+                        seat=None,
+                        payload={
+                            "card_name": bottom_name,
+                            "name": bottom_name,
+                            "initial_spell": bottom_name,
+                            "depth": len(cur_stack),
+                            "stack_depth": len(cur_stack),
+                            "counter_count": len(counter_names),
+                        },
+                        ts=ts_base,
+                        salience=ev.SALIENCE_HIGH,
+                    )]
+            return []
+        except Exception:
+            return []
+
+    def detect_combat_trick(self, prev, cur):
+        """Detect instant-speed buffs or interactions deployed during combat steps."""
+        try:
+            phase = (getattr(getattr(cur, "turn_info", None), "phase", "") or "").lower()
+            in_combat = any(s in phase for s in ("declareattackers", "declareblockers", "begincombat", "firststrike", "combat"))
+            if not in_combat:
+                return []
+
+            prev_stack = _zone_object_ids(prev, ("stack",))
+            cur_stack = _zone_object_ids(cur, ("stack",))
+            new_ids = sorted(cur_stack - prev_stack)
+            if not new_ids:
+                return []
+
+            out = []
+            ts_base = getattr(cur, "ts", 0.0) or 0.0
+            idx = 0
+            for iid in new_ids:
+                if iid in self._seen_combat_tricks:
+                    continue
+                ref = (getattr(cur, "objects", None) or {}).get(iid)
+                if not ref:
+                    continue
+                name = getattr(ref, "name", None)
+                types = getattr(ref, "card_types", ()) or ()
+                is_instant = "instant" in types or (name and is_combat_trick(name))
+                if not is_instant:
+                    continue
+
+                self._seen_combat_tricks.add(iid)
+                seat = getattr(ref, "controller_seat", None) or getattr(ref, "owner_seat", None)
+                out.append(Event(
+                    kind=ev.COMBAT_TRICK,
+                    seat=seat,
+                    payload={
+                        "card_name": name or "a combat trick",
+                        "name": name or "a combat trick",
+                        "phase": phase,
+                    },
+                    ts=ts_base + idx * 0.01,
+                    salience=ev.SALIENCE_HIGH,
+                ))
+                idx += 1
+            return out
+        except Exception:
+            return []
+
+    def detect_chump_block(self, prev, cur):
+        """Detect sacrificial blocks where a small creature blocks a lethal or heavy attacker."""
+        try:
+            match_id = getattr(getattr(cur, "match_meta", None), "match_id", None) or "local"
+            blocks = self.detect_block_declared(prev, cur)
+            if not blocks:
+                return []
+            payload = blocks[0].payload or {}
+            block_list = payload.get("blocks") or []
+            out = []
+            ts_base = getattr(cur, "ts", 0.0) or 0.0
+            idx = 0
+            for blk in block_list:
+                bid = blk.get("blocker_instance_id")
+                aids = blk.get("attacker_instance_ids") or []
+                if not bid or not aids:
+                    continue
+                aid = aids[0]
+                key = (match_id, bid, aid)
+                if key in self._seen_chump_blocks:
+                    continue
+
+                b_ref = (getattr(cur, "objects", None) or {}).get(bid) or (getattr(prev, "objects", None) or {}).get(bid)
+                a_ref = (getattr(cur, "objects", None) or {}).get(aid) or (getattr(prev, "objects", None) or {}).get(aid)
+                if not b_ref or not a_ref:
+                    continue
+
+                bp = getattr(b_ref, "power", None) or 0
+                bt = getattr(b_ref, "toughness", None) or 1
+                ap = getattr(a_ref, "power", None) or 0
+                at = getattr(a_ref, "toughness", None) or 1
+
+                if ap >= bt and bp < at and (ap >= 3 or ap >= bt * 2):
+                    self._seen_chump_blocks.add(key)
+                    b_name = getattr(b_ref, "name", None) or "blocker"
+                    a_name = getattr(a_ref, "name", None) or "attacker"
+                    seat = getattr(b_ref, "controller_seat", None) or getattr(b_ref, "owner_seat", None)
+                    out.append(Event(
+                        kind=ev.CHUMP_BLOCK,
+                        seat=seat,
+                        payload={
+                            "card_name": b_name,
+                            "blocker_name": b_name,
+                            "attacker_name": a_name,
+                            "attacker_power": ap,
+                        },
+                        ts=ts_base + idx * 0.01,
+                        salience=ev.SALIENCE_LOW,
+                    ))
+                    idx += 1
+            return out
+        except Exception:
+            return []
+
+    def detect_hand_sculpting(self, prev, cur):
+        """Detect when multiple cantrips or filtering spells are cast in a single turn."""
+        try:
+            prev_stack = _zone_object_ids(prev, ("stack",))
+            cur_stack = _zone_object_ids(cur, ("stack",))
+            new_ids = sorted(cur_stack - prev_stack)
+            if not new_ids:
+                return []
+
+            turn = getattr(getattr(cur, "turn_info", None), "turn_number", 0) or 0
+            out = []
+            ts_base = getattr(cur, "ts", 0.0) or 0.0
+            idx = 0
+            for iid in new_ids:
+                ref = (getattr(cur, "objects", None) or {}).get(iid)
+                if not ref:
+                    continue
+                name = getattr(ref, "name", None)
+                if not name or not is_cantrip_or_filter(name):
+                    continue
+                seat = getattr(ref, "controller_seat", None) or getattr(ref, "owner_seat", None)
+                key = (turn, seat)
+                cast_list = self._cantrips_cast_this_turn.setdefault(key, [])
+                cast_list.append(name)
+                if len(cast_list) == 2:
+                    out.append(Event(
+                        kind=ev.HAND_SCULPTING,
+                        seat=seat,
+                        payload={
+                            "count": 2,
+                            "card_name": name,
+                            "first_card": cast_list[0],
+                            "second_card": name,
+                        },
+                        ts=ts_base + idx * 0.01,
+                        salience=ev.SALIENCE_LOW,
+                    ))
+                    idx += 1
+            return out
+        except Exception:
+            return []
+
+    def detect_unfair_play(self, prev, cur):
+        """Detect high-CMC (>= 6) bombs entering the battlefield early (turn <= 4)."""
+        try:
+            prev_bf = _zone_object_ids(prev, ("battlefield",))
+            cur_bf = _zone_object_ids(cur, ("battlefield",))
+            new_ids = sorted(cur_bf - prev_bf)
+            if not new_ids:
+                return []
+
+            turn = getattr(getattr(cur, "turn_info", None), "turn_number", 0) or 0
+            if turn > 4 or turn <= 0:
+                return []
+
+            out = []
+            ts_base = getattr(cur, "ts", 0.0) or 0.0
+            idx = 0
+            for iid in new_ids:
+                if iid in self._seen_unfair_plays:
+                    continue
+                ref = (getattr(cur, "objects", None) or {}).get(iid)
+                if not ref:
+                    continue
+                types = getattr(ref, "card_types", ()) or ()
+                if "land" in types:
+                    continue
+                grp_id = getattr(ref, "grp_id", None)
+                info = self._get_card_info(grp_id) if grp_id else None
+                mana_cost = getattr(info, "mana_cost", "") if info else ""
+                cmc = calculate_cmc(mana_cost)
+                if cmc < 6:
+                    continue
+
+                self._seen_unfair_plays.add(iid)
+                name = getattr(ref, "name", None) or (getattr(info, "name", None) if info else "a threat")
+                seat = getattr(ref, "controller_seat", None) or getattr(ref, "owner_seat", None)
+                out.append(Event(
+                    kind=ev.UNFAIR_PLAY,
+                    seat=seat,
+                    payload={
+                        "card_name": name,
+                        "name": name,
+                        "cmc": cmc,
+                        "turn": turn,
+                    },
+                    ts=ts_base + idx * 0.01,
+                    salience=ev.SALIENCE_HIGH,
+                ))
+                idx += 1
             return out
         except Exception:
             return []
