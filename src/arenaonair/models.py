@@ -102,6 +102,34 @@ class GameState:
     local_seat: int | None = None               # seat of the person running the client
     player_deck: tuple[int, ...] = ()           # grpIds of local player's submitted deck
     commander_cards: tuple[int, ...] = ()       # grpIds of local player's commander(s)
+    # Dual-source omniscience additions (dual-expansions.md S8.1/S8.4):
+    player_decks: Mapping[int, tuple[int, ...]] = field(default_factory=dict)
+    commander_cards_by_seat: Mapping[int, tuple[int, ...]] = field(default_factory=dict)
+    seat_knowledge: Mapping[int, "SeatKnowledge"] = field(default_factory=dict)
+
+    @property
+    def is_omniscient(self) -> bool:
+        """Derived conservative flag: every seat's hand visible AND library
+        accounted exactly. Detectors must gate on specific SeatKnowledge
+        fields instead of this blanket boolean."""
+        if not self.seat_knowledge:
+            return False
+        return all(
+            k.hand_visible and k.library_uncertainty == "exact"
+            for k in self.seat_knowledge.values()
+        )
+
+
+@dataclass(frozen=True)
+class SeatKnowledge:
+    """Per-seat knowledge-completeness tracking (S8.1)."""
+
+    seat: int
+    hand_visible: bool = False              # current hand identities known
+    hand_fresh_asof: float | None = None    # receiver ts backing hand_visible
+    deck_submitted: bool = False            # valid submitted decklist this game
+    library_accounted: bool = False         # reconciled with observed library size
+    library_uncertainty: str = "unknown"    # exact | estimated | unknown
 
 
 # --------------------------------------------------------------------------
@@ -135,6 +163,11 @@ class Utterance:
     excitement: str = "normal"                  # calm | normal | tense | electric
     rate: float = 1.0                           # TTS playback speed multiplier
     voice: str | None = None                    # optional per-utterance voice override
+    # Dual-booth dialogue additions (dual-expansions.md S3.2/S8.5):
+    role: str = "play_by_play"                  # play_by_play | color_analyst
+    dialogue_id: str | None = None              # groups anchor+reply pair
+    anchor_uid: str | None = None               # reply eligible only after THIS uid delivers ok
+    expires_ts: float | None = None             # reply eligibility deadline (receiver clock)
 
 
 @dataclass(frozen=True)
