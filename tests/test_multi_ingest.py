@@ -33,7 +33,14 @@ from arenaonair.models import (
     TurnInfo,
     ZoneView,
 )
-from arenaonair.relay import RelayServer
+try:
+    from arenaonair.relay import RelayServer
+    _HAS_WEBSOCKETS = True
+except ImportError:
+    # CI runners without the optional 'websockets' package: relay tests
+    # skip; everything else in this module still runs.
+    RelayServer = None
+    _HAS_WEBSOCKETS = False
 from arenaonair.sources import (
     SourceRegistry,
     SourceTag,
@@ -518,6 +525,8 @@ _HANDSHAKE = ("ack", "welcome")
 
 class TestRelayRoundtrip:
 
+    @pytest.mark.skipif(not _HAS_WEBSOCKETS,
+                        reason="'websockets' package not installed")
     def test_auth_roundtrip_and_frame_receipt(self):
 
         async def scenario():
@@ -580,6 +589,8 @@ class TestRelayRoundtrip:
 
         asyncio.run(scenario())
 
+    @pytest.mark.skipif(not _HAS_WEBSOCKETS,
+                        reason="'websockets' package not installed")
     def test_wrong_secret_client_gets_closed(self):
 
         async def scenario():
