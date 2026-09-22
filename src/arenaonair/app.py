@@ -636,6 +636,15 @@ def main(argv=None) -> int:
         while app._watch_thread is not None \
                 and app._watch_thread.is_alive():
             app._watch_thread.join(timeout=0.5)
+        if args.once:
+            # --once contract: the transcript must be COMPLETE before exit.
+            # The watcher's own drain window can elapse on slow runners while
+            # the speech thread is still working through the backlog; give
+            # the pump bounded extra time to finish everything enqueued.
+            deadline = time.monotonic() + 60.0
+            while (len(app.queue) > 0 or getattr(app.pump, "current", None)
+                    is not None) and time.monotonic() < deadline:
+                time.sleep(0.01)
     except KeyboardInterrupt:
         pass
     finally:
