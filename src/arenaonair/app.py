@@ -36,7 +36,7 @@ from .carddb import DEFAULT_DB_PATH, CardDb
 from .differ import EventDiffer
 from .gre_parser import parse_line_all
 from .models import DeliveryResult
-from .narrator import Narrator
+from .narrator import DialogueSequencer, Narrator
 from .pacing import compute_pacing
 from .speech import (
     PRESERVED_KINDS,
@@ -141,6 +141,14 @@ class ArenaOnAirApp:
             card_lookup=card_lookup,
         )
         self.narrator = Narrator(window=self.config.window)
+        # Dual-booth dialogue (S3.2/S8.5): sequencer enabled only in dual
+        # mode; solo mode keeps the legacy single-caster behavior exactly.
+        booth = config_mod.resolve_booth(self.config)
+        self.booth_mode = booth["mode"]
+        self.dialogue = DialogueSequencer(
+            window=self.config.window,
+            enabled=(self.booth_mode == "dual"),
+        )
         self.queue = SpeechQueue()
 
         self.speaker = None          # built in start()
@@ -416,6 +424,13 @@ class ArenaOnAirApp:
         if utt is None:
             return
 
+        # Dual-booth dialogue (S8.5): after a qualifying PBP anchor renders,
+        # optionally generate its color-analyst companion. The companion is
+        # enqueued right after the anchor and carries anchor_uid so the
+        # SpeechQueue gates its delivery on the anchor's result.
+        companion = self.dialogue.maybe_reply(utt, event, snap) \
+            if getattr(self.dialogue, "enabled", False) else None
+
         if event.kind in ("game_end", "match_end"):
             # Closing line first:
             # 1. Purge any pending play-by-play utterances for this match so
@@ -466,6 +481,10 @@ class ArenaOnAirApp:
         if self.queue.enqueue(utt):
             self._last_utterance = utt.text
             self._last_speech_time = time.monotonic()
+            # Companion follows its anchor into the queue (adjacent pair);
+            # delivery ordering/eligibility is enforced by the SpeechQueue.
+            if companion is not None:
+                self.queue.enqueue(companion)
 
     def _await_delivery(self, utt) -> None:
         """Wait until the pump confirms delivery of ``utt`` (bounded)."""
