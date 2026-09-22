@@ -856,6 +856,16 @@ class DualStateBuilder:
                 if prev_link_ok and not child.chain_valid:
                     child.chain_valid = True
                     self._registry.set_flags(sid, chain_valid=True)
+                # Recovery revalidation (S8.2): a source recovering into the
+                # SAME match regains its baseline once it has folded a fresh
+                # match-bearing snapshot onto a valid GRE linkage. Without
+                # this branch baseline_ok could never flip back on (only the
+                # first-contact branch set it), permanently blocking
+                # enrichment after recovery.
+                if (prev_link_ok and not child.baseline_ok
+                        and not child.lost):
+                    child.baseline_ok = True
+                    self._registry.set_flags(sid, baseline_ok=True)
 
         if sid == 0 or self._primary_sid is None:
             if self._primary_sid is None:
