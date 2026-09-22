@@ -25,8 +25,16 @@ via queue.flush.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import logging
 import sys
+if __name__ == "__main__" and sys.version_info < (3, 11):
+    import os
+    from pathlib import Path
+    launcher = Path(__file__).resolve().parents[2] / "run.sh"
+    if launcher.is_file():
+        os.execv("/bin/bash", ["bash", str(launcher), *sys.argv[1:]])
+    raise SystemExit("ArenaOnAir requires Python 3.11 or newer.")
 import threading
 import time
 
@@ -45,9 +53,10 @@ from .speech import (
     SpeechQueue,
     build_speaker_chain,
 )
-from .state_builder import GameStateBuilder
+from .state_builder import GameStateBuilder, DualStateBuilder, with_knowledge
+from .sources import SourceTag, TaggedMessage
 from .story import StoryModel
-from .watcher import LogWatcher
+from .watcher import LogWatcher, MultiLogWatcher
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +143,15 @@ class ArenaOnAirApp:
             name_resolver = None
 
         card_lookup = self.carddb.lookup if self.carddb is not None else None
+        self.route = config_mod.resolve_route(self.config)["route"]
         self.builder = GameStateBuilder(name_resolver=name_resolver)
+        self.fusion = DualStateBuilder(name_resolver=name_resolver) if self.route in ("dual_file", "relay_server") else None
+        self._source_sequences = {}
+        self._source_generations = {}
+        self._source_backlogs = {}
+        self._source_prev = None
+        self._public_seen = set()
+        self._source_health = {}
         self.differ = EventDiffer(card_lookup=card_lookup)
         self.story = StoryModel(
             thresholds=self.config.story_thresholds or None,
@@ -144,6 +161,7 @@ class ArenaOnAirApp:
         # Dual-booth dialogue (S3.2/S8.5): sequencer enabled only in dual
         # mode; solo mode keeps the legacy single-caster behavior exactly.
         booth = config_mod.resolve_booth(self.config)
+        self.booth = booth
         self.booth_mode = booth["mode"]
         self.dialogue = DialogueSequencer(
             window=self.config.window,
@@ -189,15 +207,27 @@ class ArenaOnAirApp:
                 speaker = build_speaker_chain(
                     platform=self.config.tts_platform,
                     config=chains_cfg,
-                    voice=self.config.tts_voice,
+                    voice=self.booth["pbp_voice"],
                 )
             self.speaker = speaker
-            self.pump = SpeechPump(queue=self.queue, speaker=speaker)
+            if self.booth_mode == "dual":
+                for engine in getattr(speaker, "engines", [getattr(speaker, "engine", None)]):
+                    preload = getattr(engine, "preload_voices", None)
+                    if callable(preload):
+                        preload([v for v in (self.booth["pbp_voice"], self.booth["analyst_voice"]) if v])
+            self.pump = SpeechPump(queue=self.queue, speaker=speaker,
+                                   handoff_gap_s=self.config.co_caster_delay_ms / 1000.0)
 
-        self.watcher = LogWatcher(
-            path=self.config.log_path,
-            anchor=self.config.anchor,
-        )
+        if self.route == "relay_server":
+            from .relay import RelayLogSource
+            self.watcher = RelayLogSource(self.config.relay_bind or "0.0.0.0:8765",
+                                          secret=self.config.relay_secret or "")
+            self.watcher.start()
+        elif self.route == "dual_file":
+            self.watcher = MultiLogWatcher([p for p in (self.config.log_player1, self.config.log_player2) if p],
+                                           anchor=False)
+        else:
+            self.watcher = LogWatcher(path=self.config.log_path, anchor=self.config.anchor)
 
         self._speech_thread = threading.Thread(
             target=self._speech_loop,
@@ -216,6 +246,7 @@ class ArenaOnAirApp:
     def set_voice(self, voice: str) -> None:
         """Dynamically switch the broadcast voice on the fly."""
         self.config.tts_voice = str(voice).strip()
+        self.booth["pbp_voice"] = str(voice).strip()
         if self.speaker is not None and hasattr(self.speaker, "set_voice"):
             self.speaker.set_voice(str(voice).strip())
 
@@ -229,6 +260,8 @@ class ArenaOnAirApp:
             if thread is not None and thread.is_alive():
                 thread.join(timeout=5.0)
 
+        if self.watcher is not None:
+            self.watcher.close()
         if self.speaker is not None:
             try:
                 self.speaker.shutdown()
@@ -275,6 +308,16 @@ class ArenaOnAirApp:
             except Exception:
                 logger.exception("watcher poll raised; stopping watch loop")
                 return
+            if self.fusion is not None:
+                for sid, healthy in dict(getattr(watcher, "source_health", {})).items():
+                    if not healthy:
+                        self.fusion.mark_source_lost(sid)
+                    self._source_health[sid] = healthy
+                # Also invalidate queued analysis during a quiet disconnect.
+                current = self.fusion.publish()
+                if current is not None:
+                    self._invalidate_analysis(current)
+
             if not lines:
                 idle_polls += 1
                 if self.once_mode and idle_polls >= IDLE_POLLS_BEFORE_DONE:
@@ -290,18 +333,23 @@ class ArenaOnAirApp:
                 continue
 
             idle_polls = 0
-            for ts, raw in lines:
-                try:
-                    prev_snap, backlog = self._feed_line(prev_snap,
-                                                         backlog,
-                                                         ts,
-                                                         raw)
-                except Exception:
-                    logger.exception("watcher feed_line raised on %r",
-                                     raw[:120])
-                    raise
+            for item in lines:
+              try:
+                if self.fusion is None:
+                    ts, raw = item
+                    prev_snap, backlog = self._feed_line(prev_snap, backlog, ts, raw)
+                else:
+                    if len(item) == 4:
+                        sid, gen, ts, raw = item
+                    else:
+                        sid, ts, raw = item
+                        gen = getattr(watcher, "generations", {}).get(sid, 0)
+                    self._feed_source_line(sid, gen, ts, raw)
                 if self._stop_event.is_set():
                     return
+              except Exception:
+                logger.exception("watcher line feed raised on %r", str(item)[:120])
+                raise
 
             # In --once mode, pace batch reading to allow the test/smoke speaker
             # to voice each batch in order. In live mode, NEVER block here so
@@ -331,71 +379,115 @@ class ArenaOnAirApp:
             if snap is None:
                 continue
 
-            snap_match_id = getattr(getattr(snap, "match_meta", None),
-                                    "match_id", None)
-            snap_match_id = str(snap_match_id) if snap_match_id else None
-
-            previous_match_id = self._match_id
-
-            if snap_match_id is not None and previous_match_id is not None \
-                    and snap_match_id != previous_match_id:
-                # Phantom-opener discipline FIRST -- seal the outgoing
-                # match's queue before anything from this snapshot renders.
-                removed = self.queue.flush(previous_match_id)
-                logger.info(
-                    "match transition %s -> %s; flushed %d queued "
-                    "utterance(s)",
-                    previous_match_id,
-                    snap_match_id,
-                    removed,
-                )
-
-            events = self._events_for(snap, backlog, prev_snap)
-            snap_id = getattr(snap, "snapshot_id", None)
-
-            # Fast tempo and pruning discipline:
-            # During live play, when the player takes an action (cast, attack,
-            # block, land drop, counter), check if previous speech was not
-            # spoken in time.
-            tempo = "normal"
-            if not self.once_mode and snap_id != self._last_play_snap_id:
-                has_player_action = any(
-                    e.kind in ("cast", "attack_declared", "block_declared",
-                               "land_drop", "counter")
-                    for e in events
-                )
-                if has_player_action:
-                    unspoken_plays = self.queue.play_count(self._match_id)
-                    is_busy = bool(self.pump and getattr(self.pump, "current", None) is not None)
-
-                    if unspoken_plays > 0 or is_busy:
-                        tempo = "fast"
-                        pruned = self.queue.prune_plays(self._match_id)
-                        if pruned > 0:
-                            logger.info("Fast tempo: pruned %d un-spoken play(s)", pruned)
-
-                    self._last_event_time = time.monotonic()
-                    self._last_play_snap_id = snap_id
-
-            for event in events:
-                self._handle_event(event, snap,
-                                   previous_match_id=previous_match_id,
-                                   tempo=tempo)
-            # Window consumed: the next diff must only see messages that
-            # arrived after this snapshot.
-            backlog = []
-
-            if snap_match_id is not None \
-                    and snap_match_id != self._match_id:
-                self._match_id = snap_match_id
-                self.queue.set_active_match(snap_match_id)
-                with self._state_lock:
-                    if self._state == AppState.WATCHING:
-                        self._state = AppState.IN_MATCH
-
-            prev_snap = snap
+            snap = with_knowledge(snap, [snap.local_seat] if snap.local_seat is not None else [], time.monotonic())
+            self._invalidate_analysis(snap)
+            self._consume_snapshot(prev_snap, snap, backlog)
+            prev_snap, backlog = snap, []
 
         return prev_snap, backlog
+
+    def _consume_snapshot(self, prev_snap, snap, backlog):
+        snap_match_id = getattr(getattr(snap, "match_meta", None),
+                                "match_id", None)
+        snap_match_id = str(snap_match_id) if snap_match_id else None
+
+        previous_match_id = self._match_id
+
+        if snap_match_id is not None and previous_match_id is not None \
+                and snap_match_id != previous_match_id:
+            # Phantom-opener discipline FIRST -- seal the outgoing
+            # match's queue before anything from this snapshot renders.
+            removed = self.queue.flush(previous_match_id)
+            logger.info(
+                "match transition %s -> %s; flushed %d queued "
+                "utterance(s)",
+                previous_match_id,
+                snap_match_id,
+                removed,
+            )
+
+        events = self._events_for(snap, backlog, prev_snap)
+        snap_id = getattr(snap, "snapshot_id", None)
+
+        # Fast tempo and pruning discipline:
+        # During live play, when the player takes an action (cast, attack,
+        # block, land drop, counter), check if previous speech was not
+        # spoken in time.
+        tempo = "normal"
+        if not self.once_mode and snap_id != self._last_play_snap_id:
+            has_player_action = any(
+                e.kind in ("cast", "attack_declared", "block_declared",
+                           "land_drop", "counter")
+                for e in events
+            )
+            if has_player_action:
+                unspoken_plays = self.queue.play_count(self._match_id)
+                is_busy = bool(self.pump and getattr(self.pump, "current", None) is not None)
+
+                if unspoken_plays > 0 or is_busy:
+                    tempo = "fast"
+                    pruned = self.queue.prune_plays(self._match_id)
+                    if pruned > 0:
+                        logger.info("Fast tempo: pruned %d un-spoken play(s)", pruned)
+
+                self._last_event_time = time.monotonic()
+                self._last_play_snap_id = snap_id
+
+        for event in events:
+            self._handle_event(event, snap,
+                               previous_match_id=previous_match_id,
+                               tempo=tempo)
+
+        if snap_match_id is not None \
+                and snap_match_id != self._match_id:
+            self._match_id = snap_match_id
+            self.queue.set_active_match(snap_match_id)
+            with self._state_lock:
+                if self._state == AppState.WATCHING:
+                    self._state = AppState.IN_MATCH
+
+
+    def _invalidate_analysis(self, snap):
+        # Replies refer to a particular state. They cannot survive a source
+        # loss or a new public state just because their anchor succeeded.
+        signature = (snap.match_meta.match_id, snap.game_id, snap.gre_state_id,
+                     tuple(sorted((seat, k.hand_visible) for seat, k in snap.seat_knowledge.items())))
+        if getattr(self, "_analysis_signature", signature) != signature:
+            self.queue.prune_replies()
+            old = self._analysis_signature
+            if old[:2] != signature[:2] or not set(old[3]) <= set(signature[3]):
+                self.differ._armed_traps.clear()
+        self._analysis_signature = signature
+
+    def _feed_source_line(self, sid, generation, ts, raw):
+        if self._source_generations.get(sid) != generation:
+            self._source_generations[sid] = generation
+            self._source_sequences[sid] = 0
+            self._source_backlogs[sid] = []
+        for msg in parse_line_all(ts, raw):
+            self._source_sequences[sid] += 1
+            self._source_backlogs.setdefault(sid, []).append(msg)
+            self.fusion.ingest(TaggedMessage(SourceTag(sid, generation, self._source_sequences[sid], ts), msg))
+            snap = self.fusion.publish()
+            if snap is None:
+                continue
+            self._invalidate_analysis(snap)
+            key = (snap.match_meta.match_id, snap.game_id, snap.gre_state_id)
+            if self.fusion.public_advanced and key not in self._public_seen:
+                self._public_seen.add(key)
+                messages = self._source_backlogs.get(self.fusion.public_source, [])
+                self._consume_snapshot(self._source_prev, snap, messages)
+                self._source_prev = snap
+                self._source_backlogs = {k: [] for k in self._source_backlogs}
+            elif snap.chain_valid:
+                # Enrichment/actions can create new strategic observations,
+                # but must never re-diff public events or momentum.
+                self.differ._window_msgs = [msg] if sid == self.fusion.public_source else []
+                enriched_events = self.differ.detect_trap_armed(self._source_prev, snap)
+                enriched_events.extend(self.story._fold_clash_of_outs(snap, msg.ts))
+                for event in enriched_events:
+                    self._handle_event(event, snap)
+                self._source_prev = snap
 
     def _events_for(self, snap, backlog: list, prev_snap) -> list:
         """Diff + story events for one newly published snapshot."""
@@ -432,6 +524,7 @@ class ArenaOnAirApp:
         )
         if utt is None:
             return
+        utt = replace(utt, voice=self.booth["pbp_voice"])
 
         # Dual-booth dialogue (S8.5): after a qualifying PBP anchor renders,
         # optionally generate its color-analyst companion. The companion is
@@ -439,6 +532,9 @@ class ArenaOnAirApp:
         # SpeechQueue gates its delivery on the anchor's result.
         companion = self.dialogue.maybe_reply(utt, event, snap) \
             if getattr(self.dialogue, "enabled", False) else None
+        if companion is not None:
+            utt = replace(utt, dialogue_id=companion.dialogue_id)
+            companion = replace(companion, voice=self.booth["analyst_voice"], expires_ts=time.monotonic() + 15.0)
 
         if event.kind in ("game_end", "match_end"):
             # Closing line first:
@@ -523,6 +619,10 @@ class ArenaOnAirApp:
             "match_id": self._match_id,
             "queued": len(self.queue),
             "last_utterance": self._last_utterance,
+            "broadcast_mode": self.booth_mode,
+            "route": self.route,
+            "sources": dict(self._source_health),
+            "enriched": bool(self.fusion and self.fusion.last_publish_was_enriched),
         }
 
 
