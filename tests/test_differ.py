@@ -243,16 +243,27 @@ class TestResolveCounter:
         assert resolves[0].payload["to_zone"] == "graveyard"
 
     def test_spell_removed_while_others_remain_counts_as_counter(self):
+        """S7.8: COUNTER requires affirmative evidence.
+
+        A stack->graveyard disappearance with other spells still on the stack
+        is ambiguous (ordinary resolution looks identical), so the detector
+        must NOT assert a counter without evidence. With a counterspell on
+        the previous stack, the disappearance is classified as COUNTER and
+        attributed to the counterspell's controller.
+        """
         d = EventDiffer()
         countered = card(42, types=("instant",), ctrl=2)
         keeper = card(43, types=("instant",), ctrl=1)
+        counter_spell = card(44, types=("instant",), ctrl=1,
+                             name="Negate")
         prev_zones = {
             "battlefield:pub": ZoneView(1, "ZoneType_Battlefield", None, ()),
-            "stack:pub": ZoneView(9, "ZoneType_Stack", None, (42, 43)),
+            "stack:pub": ZoneView(9, "ZoneType_Stack", None, (42, 43, 44)),
         }
         prev = GameState(snapshot_id=1, prev_snapshot_id=None,
                          zones=prev_zones,
-                         objects={42: countered, 43: keeper},
+                         objects={42: countered, 43: keeper,
+                                  44: counter_spell},
                          players={}, turn_info=TurnInfo(None, 1, None),
                          match_meta=MatchMeta(None, None), local_seat=None)
         cur_zones = {
@@ -265,11 +276,43 @@ class TestResolveCounter:
                         objects={43: keeper},
                         players={}, turn_info=TurnInfo(None, 1, None),
                         match_meta=MatchMeta(None, None), local_seat=None)
-        counters = of_kind(d.diff(prev, cur, []), ev.COUNTER)
+        events = d.diff(prev, cur, [])
+        counters = of_kind(events, ev.COUNTER)
         assert len(counters) == 1
         assert counters[0].payload["name"] is None or \
             counters[0].payload["name"] == countered.name
-        assert "countered_by_seat" in counters[0].payload
+        assert counters[0].payload.get("countered_by_seat") == 1
+
+    def test_spell_removed_without_evidence_is_resolve_not_counter(self):
+        """S7.8 negative case: no counterspell on stack, no annotation ->
+        ordinary resolution above another spell must NOT be a COUNTER."""
+        d = EventDiffer()
+        resolved = card(52, types=("instant",), ctrl=1)
+        keeper = card(53, types=("instant",), ctrl=2)
+        prev_zones = {
+            "battlefield:pub": ZoneView(1, "ZoneType_Battlefield", None, ()),
+            "stack:pub": ZoneView(9, "ZoneType_Stack", None, (52, 53)),
+        }
+        prev = GameState(snapshot_id=1, prev_snapshot_id=None,
+                         zones=prev_zones,
+                         objects={52: resolved, 53: keeper},
+                         players={}, turn_info=TurnInfo(None, 1, None),
+                         match_meta=MatchMeta(None, None), local_seat=None)
+        cur_zones = {
+            "battlefield:pub": ZoneView(1, "ZoneType_Battlefield", None, ()),
+            "stack:pub": ZoneView(9, "ZoneType_Stack", None, (53,)),
+            "graveyard:1": ZoneView(33, "ZoneType_Graveyard", 1, (52,)),
+        }
+        cur = GameState(snapshot_id=2, prev_snapshot_id=1,
+                        zones=cur_zones,
+                        objects={53: keeper},
+                        players={}, turn_info=TurnInfo(None, 1, None),
+                        match_meta=MatchMeta(None, None), local_seat=None)
+        events = d.diff(prev, cur, [])
+        assert of_kind(events, ev.COUNTER) == []
+        resolves = of_kind(events, ev.RESOLVE)
+        assert len(resolves) == 1
+        assert resolves[0].payload["to_zone"] == "graveyard"
 
 
 # ---------------------------------------------------------------------------

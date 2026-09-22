@@ -17,6 +17,7 @@ import importlib.util
 import os
 import subprocess  # noqa: F401  (re-exported convenience for subclasses)
 import sys
+import threading
 from typing import Union
 
 from ..models import DeliveryResult, Utterance
@@ -140,7 +141,13 @@ class KokoroEngine(TTSEngine):
                                        else "a")
         self.player_bin = player_bin  # optional explicit playback binary
         self._pipeline = None
-        self._cancel_flag = False
+        # Cancellation is scoped to the in-flight utterance via a generation
+        # token: cancel() bumps the generation and flags the CURRENT one; a
+        # later speak() starts a fresh generation and is never affected by an
+        # older cancel. Guarded because watcher/speech threads race here.
+        self._cancel_lock = threading.Lock()
+        self._cancel_generation = 0
+        self._speaking_generation = 0
 
     def available(self) -> bool:
         return importlib.util.find_spec("kokoro") is not None
@@ -148,6 +155,38 @@ class KokoroEngine(TTSEngine):
     def set_voice(self, voice: str) -> None:
         """Update active voice name (e.g. 'af_heart', 'am_adam', 'bm_george')."""
         self.voice = str(voice).strip()
+
+    # -- cancellation (generation-scoped) -----------------------------------
+
+    def _begin_utterance(self) -> int:
+        """Register a new in-flight utterance; returns its generation token."""
+        with self._cancel_lock:
+            self._speaking_generation += 1
+            return self._speaking_generation
+
+    def _is_cancelled(self, generation: int) -> bool:
+        """True iff a cancel was issued at or after this utterance began.
+
+        Pure generation arithmetic (no shared boolean): a cancel aimed at an
+        older utterance can never be cleared by a newer one beginning, and a
+        newer utterance is never hit by an older cancel.
+        """
+        with self._cancel_lock:
+            return self._cancel_generation >= generation > 0
+
+    def cancel(self) -> None:
+        """Interrupt the CURRENT in-flight utterance only.
+
+        Scoped via a generation token: a cancel issued while utterance N is
+        playing flags generation N; the NEXT utterance (N+1) begins with a
+        clean flag, so one cancel can never silence the rest of the session.
+        Safe across watcher/speech threads: a cancel racing a brand-new
+        speak() either lands on the old generation (>= check) or is absorbed
+        harmlessly — it can never clear a cancel intended for an older
+        utterance, because generations only ever increase.
+        """
+        with self._cancel_lock:
+            self._cancel_generation = self._speaking_generation
 
     # -- synthesis ---------------------------------------------------------
 
@@ -159,7 +198,8 @@ class KokoroEngine(TTSEngine):
                                        device=self.device)
         return self._pipeline
 
-    def _synthesize_pcm(self, text: str, rate: float = 1.0, voice: str | None = None):
+    def _synthesize_pcm(self, text: str, rate: float = 1.0,
+                        voice: str | None = None, generation: int = 0):
         """Yield (numpy_float32_array, sample_rate) chunks for ``text``."""
         import numpy as np
 
@@ -167,7 +207,7 @@ class KokoroEngine(TTSEngine):
         effective_speed = max(0.5, min(2.0, self.speed * rate))
         active_voice = voice or self.voice
         for chunk in pipe(text, voice=active_voice, speed=effective_speed):
-            if self._cancel_flag:
+            if self._is_cancelled(generation):
                 return
             audio = getattr(chunk, "audio", None)
             if audio is None:
@@ -176,14 +216,14 @@ class KokoroEngine(TTSEngine):
 
     # -- playback per OS ----------------------------------------------------
 
-    def _play_chunk(self, pcm, sr: int) -> None:
-        """Blocking playback of one PCM chunk; honors cancel flag."""
-        if self._cancel_flag:
+    def _play_chunk(self, pcm, sr: int, generation: int = 0) -> None:
+        """Blocking playback of one PCM chunk; honors scoped cancel flag."""
+        if self._is_cancelled(generation):
             return
         if sys.platform == "win32":
             self._play_sounddevice(pcm, sr)
         elif sys.platform == "darwin":
-            self._play_afplay(pcm, sr)
+            self._play_afplay(pcm, sr, generation=generation)
         else:
             self._play_aplay(pcm, sr)
 
@@ -206,7 +246,14 @@ class KokoroEngine(TTSEngine):
 
         sd.play(pcm.reshape(-1, 1), samplerate=sr, blocking=True)
 
-    def _play_afplay(self, pcm, sr: int) -> None:
+    def _play_afplay(self, pcm, sr: int, generation: int = 0) -> None:
+        """Play one PCM chunk via afplay; raise on nonzero exit.
+
+        S7.10: completion + exit status are checked (never check=False with
+        the result discarded); stderr is captured so the propagated error
+        carries actionable info; the temp wav is removed on success, failure
+        AND cancellation.
+        """
         import subprocess
         import tempfile
 
@@ -215,10 +262,19 @@ class KokoroEngine(TTSEngine):
             tf.write(wav)
             path = tf.name
         try:
-            subprocess.run([self.player_bin or "afplay", path],
-                           check=False,
-                           stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL)
+            proc = subprocess.run(
+                [self.player_bin or "afplay", path],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=120,
+            )
+            if proc.returncode != 0:
+                stderr = (proc.stderr or b"").decode(errors="replace").strip()
+                detail = f": {stderr}" if stderr else ""
+                raise RuntimeError(
+                    f"kokoro: afplay exited {proc.returncode}{detail}"
+                )
         finally:
             try:
                 os.unlink(path)
@@ -258,19 +314,25 @@ class KokoroEngine(TTSEngine):
     # -- TTSEngine surface ---------------------------------------------------
 
     def synthesize(self, text: str, rate: float = 1.0, voice: str | None = None) -> None:
-        chunks_played = 0
-        for pcm, sr in self._synthesize_pcm(text, rate=rate, voice=voice):
-            self._play_chunk(pcm, sr)
-            chunks_played += 1
-        if chunks_played == 0 and not self._cancel_flag:
-            raise RuntimeError("kokoro produced no audio")
+        """Synthesize + play one utterance; raise on failure or cancellation.
 
-    def cancel(self) -> None:
-        self._cancel_flag = True
+        Cancellation is scoped to THIS utterance via its generation token and
+        reported as an interruption (distinct from an engine fault) so the
+        runtime fallback chain never replays an intentionally canceled line.
+        """
+        generation = self._begin_utterance()
+        chunks_played = 0
+        for pcm, sr in self._synthesize_pcm(
+                text, rate=rate, voice=voice, generation=generation):
+            self._play_chunk(pcm, sr, generation=generation)
+            chunks_played += 1
+        if self._is_cancelled(generation):
+            raise InterruptedError("kokoro: synthesis cancelled mid-utterance")
+        if chunks_played == 0:
+            raise RuntimeError("kokoro produced no audio")
 
     def shutdown(self) -> None:
         self._pipeline = None
-        self._cancel_flag = False
 
 
 def load_engine_class(name: str) -> type[TTSEngine]:

@@ -190,7 +190,20 @@ class LogWatcher:
         if self._fh is None:
             return False
         size = self._current_size()
-        if size < self._offset or (bool(self._pending) and size <= self._offset):
+
+        # Idle-with-pending is NORMAL here: ``size == offset`` merely means we
+        # drained every byte available while an unfinished trailing line still
+        # awaits its newline -- rewinding would replay already-emitted lines.
+        #
+        # Rewind ONLY on positive truncation evidence: the file physically
+        # shrank below our consumed offset, so bytes we already emitted are
+        # gone from this generation.
+        #
+        # Rotation/file replacement never reaches this path with an intact
+        # handle; identity changes route through ``_need_reopen`` -> ``_open``,
+        # which starts the fresh generation at its own offset with an empty
+        # pending buffer.
+        if size < self._offset:
             # Truncated under us: drop the partial buffer too -- its bytes
             # belonged to the dead generation.
             try:

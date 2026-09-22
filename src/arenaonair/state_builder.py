@@ -97,30 +97,142 @@ class _WorkingZone:
         return "%s:%s" % (self.zone_type, owner)
 
 
+# Zone types that hold cards the local player has ALREADY drawn out of the
+# library (spent / accessible). Everything else -- notably LIBRARY itself --
+# stays counted as "still to come".
+_SPENT_ZONE_TYPES = frozenset({
+    "hand", "battlefield", "graveyard", "stack", "exile", "command",
+    "revealed", "pending",
+})
+
+# Zone types whose membership is NOT part of the submitted-deck accounting at
+# all (limbo is transient; sideboard was never in the submitted 40).
+_IGNORED_ZONE_TYPES = frozenset({"limbo", "sideboard", "suppressed"})
+
+
+def _zone_type_of(zone) -> str:
+    return _strip_prefix(str(getattr(zone, "zone_type", "") or ""),
+                         "ZoneType_").lower()
+
+
 def remaining_deck_cards(state: GameState) -> Counter[int]:
-    """Calculate counts of grpIds remaining in the local player's library.
+    """Counts of grpIds still to be drawn from the local player's library.
 
-    Subtracts all observed copies belonging to local_seat in:
-    - hand
-    - battlefield
-    - graveyard
-    - stack
-    - exile
-    from state.player_deck.
+    Zone-membership accounting (S7.9): an owned object counts AGAINST the
+    submitted deck only when it currently sits in a NON-library zone that
+    represents a card already drawn out of the library (hand / battlefield /
+    graveyard / stack / exile / command / revealed / pending). A known card
+    still residing in the LIBRARY zone remains counted as remaining.
+
+    Provenance guards:
+    - Only objects whose owner/controller is ``local_seat`` are considered.
+    - grpIds outside the submitted deck (generated copies, tokens, commanders
+      fetched separately) never consume submitted-deck copies.
+    - Stale object records (instances no longer referenced by any zone) are
+      ignored -- membership is read from live zone rosters, not from the
+      object table.
+
+    Reconciliation + uncertainty: when the observed library roster is visible,
+    its size bounds the true remainder; if the computed remainder exceeds the
+    observed library size the excess is trimmed and the shortfall recorded.
+    Attach ``state.deck_uncertainty``-style info via the returned Counter's
+    ``uncertain`` attribute (True when exact composition cannot be proven,
+    e.g. hidden zones or reconciliation trimming occurred).
+
+    Returns an empty Counter when deck/local-seat information is missing.
     """
-    if not getattr(state, "player_deck", None) or getattr(state, "local_seat", None) is None:
-        return Counter()
+    out = Counter()
+    if not getattr(state, "player_deck", None) \
+            or getattr(state, "local_seat", None) is None:
+        return out
 
+    local_seat = state.local_seat
     total = Counter(state.player_deck)
-    observed: Counter[int] = Counter()
-    for ref in (state.objects or {}).values():
-        owner = getattr(ref, "owner_seat", None)
-        ctrl = getattr(ref, "controller_seat", None)
-        seat = owner if owner is not None else ctrl
-        if seat == state.local_seat and getattr(ref, "grp_id", None) is not None:
-            observed[ref.grp_id] += 1
 
-    return total - observed
+    # Live zone rosters -> {iid: zone_type} for zones relevant to accounting.
+    iid_zone: dict[int, str] = {}
+    library_ids: set[int] = set()
+    try:
+        for zone in (state.zones or {}).values():
+            ztype = _zone_type_of(zone)
+            if not ztype or ztype in _IGNORED_ZONE_TYPES:
+                continue
+            for iid in getattr(zone, "object_ids", ()) or ():
+                if ztype == "library":
+                    library_ids.add(iid)
+                # First sighting wins; duplicated ids across zones are
+                # tolerated defensively.
+                iid_zone.setdefault(iid, ztype)
+    except Exception:
+        pass
+
+    objects = getattr(state, "objects", None) or {}
+
+    if not iid_zone:
+        # Degraded mode: no zone rosters at all -> current membership is
+        # unknowable; fall back to legacy object-table subtraction and flag
+        # the result as uncertain (exact composition cannot be established).
+        observed_spent: Counter[int] = Counter()
+        for ref in objects.values():
+            seat = getattr(ref, "owner_seat", None)
+            if seat is None:
+                seat = getattr(ref, "controller_seat", None)
+            if seat == local_seat:
+                grp_id = getattr(ref, "grp_id", None)
+                if grp_id is not None and grp_id in total:
+                    observed_spent[grp_id] += 1
+        out = total - observed_spent
+        try:
+            setattr(out, "uncertain", True)
+        except Exception:
+            pass
+        return out
+
+    observed_spent = Counter()
+    for iid, ztype in iid_zone.items():
+        ref = objects.get(iid)
+        if ref is None:
+            continue  # stale/unresolvable object record: no consumption
+        seat = getattr(ref, "owner_seat", None)
+        if seat is None:
+            seat = getattr(ref, "controller_seat", None)
+        if seat != local_seat:
+            continue
+        grp_id = getattr(ref, "grp_id", None)
+        if grp_id is None or grp_id not in total:
+            continue  # generated copy / token: never consumes deck copies
+        if ztype in _SPENT_ZONE_TYPES:
+            observed_spent[grp_id] += 1
+
+    out = total - observed_spent
+
+    # Reconcile against the observed library roster when it is populated.
+    observed_library_size = len(library_ids)
+    uncertain = False
+    if observed_library_size > 0:
+        computed_total = sum(cnt for cnt in out.values() if cnt > 0)
+        if computed_total > observed_library_size:
+            # Overcount: trim proportionally-largest entries down to fit and
+            # flag the estimate as inexact.
+            uncertain = True
+            excess = computed_total - observed_library_size
+            for grp_id in sorted(out, key=lambda g: (-out[g], g)):
+                if excess <= 0:
+                    break
+                take = min(excess, max(0, out[grp_id]))
+                if take:
+                    out[grp_id] -= take
+                    excess -= take
+        elif computed_total < observed_library_size:
+            # Undercount: some library members are unidentified (hidden info);
+            # exact composition cannot be established.
+            uncertain = True
+
+    try:
+        setattr(out, "uncertain", uncertain)
+    except Exception:
+        pass
+    return out
 
 
 class GameStateBuilder:

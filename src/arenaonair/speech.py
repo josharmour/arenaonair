@@ -112,6 +112,30 @@ class SpeechQueue:
             self._flushed_matches.add(match_id)
             return removed
 
+    def close_game(self, match_id: str | None) -> int:
+        """Game-boundary discipline: drop obsolete pending speech for the
+        finished game WITHOUT sealing the match.
+
+        Unlike :meth:`flush` (permanent match closure), the queue stays able
+        to narrate subsequent games of the same match (Bo3+) and the final
+        match-end announcement under the same match_id. Everything except the
+        match-end announcement is obsolete once a game ends, so it is removed.
+
+        Returns the number removed.
+        """
+        with self._lock:
+            survivors = []
+            removed = 0
+            for u in self._items:
+                if u.match_id == match_id and u.kind != "match_end":
+                    removed += 1
+                else:
+                    survivors.append(u)
+            if removed > 0:
+                self._items = survivors
+                self._uids = {u.uid for u in survivors}
+            return removed
+
     def prune_plays(self, match_id: str | None = None) -> int:
         """Fast-tempo / play-boundary discipline: drop un-spoken play-by-play speech.
 
@@ -305,17 +329,65 @@ def detect_platform(platform: str | None = None) -> str:
     return "linux"
 
 
+def _apply_voice_kwargs(
+    name: str,
+    cls: type,
+    kwargs: dict,
+    effective_voice: str | None,
+) -> dict:
+    """Translate a configured voice id into per-engine constructor kwargs.
+
+    A Kokoro voice id (``af_heart``, ``am_adam``, ...) must never disable a
+    system fallback engine: engines whose constructors do not accept a
+    ``voice`` parameter simply get no voice kwarg (they keep their own
+    sensible defaults) instead of dying with a TypeError that the probe
+    misreports as "engine unavailable".
+
+    Mapping rules:
+      - kokoro: pass the voice through verbatim (it IS a Kokoro voice id).
+      - say (macOS): pass through verbatim — macOS voice names are free-form
+        strings and ``say -v`` accepts any installed voice name.
+      - sapi / piper / espeakng: no ``voice`` constructor param; the voice is
+        intentionally not mapped (SAPI/piper pick their own default; piper's
+        voice is the model file name, not a Kokoro voice id).
+      - unknown engines: pass ``voice`` only when the constructor accepts it.
+    """
+    if not effective_voice:
+        return kwargs
+    if name == "kokoro":
+        kwargs.setdefault("voice", effective_voice)
+        return kwargs
+    if name == "say":
+        kwargs.setdefault("voice", effective_voice)
+        return kwargs
+    # Engines without a voice constructor param: leave them alone.
+    try:
+        import inspect
+
+        params = inspect.signature(cls.__init__).parameters
+        if "voice" in params or any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+        ):
+            kwargs.setdefault("voice", effective_voice)
+    except (TypeError, ValueError):  # pragma: no cover - exotic constructors
+        pass
+    return kwargs
+
+
 def build_speaker_chain(
     platform: str | None = None,
     config: dict | None = None,
     voice: str | None = None,
 ) -> Speaker:
-    """Build the first AVAILABLE engine for this platform as a Speaker.
+    """Build the ordered AVAILABLE-engine chain for this platform as a Speaker.
 
     Chains (config["chains"][platform] overrides):
       windows: kokoro → sapi     darwin: kokoro → say     linux: kokoro → piper → espeakng
 
-    Availability probe is a cheap constructor + available() check. Raises
+    Availability probe is a cheap constructor + available() check. Every
+    engine that probes available is wrapped into a :class:`ChainedSpeaker`
+    so a RUNTIME synthesis/playback failure falls through to the next engine
+    (probe success is no guarantee the engine still works later). Raises
     RuntimeError when nothing on the chain is available.
     """
     cfg = config or {}
@@ -327,24 +399,34 @@ def build_speaker_chain(
 
     effective_voice = voice or cfg.get("tts_voice") or cfg.get("voice")
     tried: list[str] = []
+    available_engines: list = []
     for name in chain_names:
         cls = load_engine_class(name)
         engines_cfg = cfg.get("engines") or {}
         kwargs = dict(engines_cfg.get(name) or {} if isinstance(engines_cfg, dict) else {})
-        if effective_voice and "voice" not in kwargs:
-            kwargs["voice"] = effective_voice
+        kwargs = _apply_voice_kwargs(name, cls, kwargs, effective_voice)
         try:
             engine = cls(**kwargs)
             ok = bool(engine.available())
         except Exception as exc:
             logger.debug("engine %s probe failed: %s", name, exc)
             ok = False
+            engine = None
         tried.append(f"{name}({'ok' if ok else 'unavailable'})")
         if ok:
-            logger.info("TTS engine selected: %s (chain=%s)", name, chain_names)
-            return EngineSpeaker(engine)
+            available_engines.append(engine)
 
-    raise RuntimeError(f"no available TTS engine for platform {plat!r}; tried {tried}")
+    if not available_engines:
+        raise RuntimeError(f"no available TTS engine for platform {plat!r}; tried {tried}")
+
+    logger.info(
+        "TTS engine chain: %s (primary=%s)",
+        [e.name for e in available_engines],
+        available_engines[0].name,
+    )
+    if len(available_engines) == 1:
+        return EngineSpeaker(available_engines[0])
+    return ChainedSpeaker(available_engines)
 
 
 class EngineSpeaker:
@@ -376,12 +458,21 @@ class EngineSpeaker:
 class ChainedSpeaker:
     """Speaker that walks an ordered engine list at speak time.
 
-    build_speaker_chain() picks the first engine AVAILABLE at probe time;
-    ChainedSpeaker keeps the whole chain so a runtime failure (engine dies,
-    audio device vanishes, model load blows up) falls through to the next
-    engine instead of dropping the utterance. Matches DESIGN §3.7's
-    "layered fallback ... behind one narrow interface".
+    build_speaker_chain() wraps every AVAILABLE-at-probe engine into this
+    speaker so a runtime failure (engine dies, audio device vanishes, model
+    load blows up) falls through to the next engine instead of dropping the
+    utterance. Matches DESIGN §3.7's "layered fallback ... behind one narrow
+    interface".
+
+    Cancellation is NOT an engine failure: when the active engine reports the
+    utterance was intentionally interrupted (canceled), the chain stops
+    immediately and reports the delivery unsuccessful — a canceled line is
+    never replayed or resumed by a fallback engine.
     """
+
+    #: Reason substrings that mark a failed result as an intentional cancel
+    #: rather than an engine fault (set by the engines themselves).
+    CANCEL_MARKERS = ("cancelled", "canceled", "interrupted")
 
     def __init__(self, engines: list) -> None:
         from .platform.tts import TTSEngine
@@ -403,6 +494,13 @@ class ChainedSpeaker:
             elif hasattr(eng, "voice"):
                 eng.voice = voice
 
+    @classmethod
+    def _is_cancellation(cls, reason: str | None) -> bool:
+        if not reason:
+            return False
+        lowered = reason.lower()
+        return any(marker in lowered for marker in cls.CANCEL_MARKERS)
+
     def speak(self, utterance: Utterance) -> DeliveryResult:
         reasons: list[str] = []
         for idx, eng in enumerate(self.engines):
@@ -411,6 +509,18 @@ class ChainedSpeaker:
                 self._active = idx
                 return result
             reasons.append(f"{eng.name}: {result.reason}")
+            if self._is_cancellation(result.reason):
+                # Intentional interruption: do NOT fall through — a fallback
+                # engine replaying a canceled line would defeat the cancel.
+                logger.info(
+                    "TTS engine %s reports cancellation for uid=%s; "
+                    "not falling through chain",
+                    eng.name, utterance.uid)
+                return DeliveryResult(
+                    uid=utterance.uid,
+                    ok=False,
+                    reason=result.reason or "cancelled",
+                )
             logger.warning(
                 "TTS engine %s failed (%s); falling through chain",
                 eng.name, result.reason)
@@ -421,6 +531,8 @@ class ChainedSpeaker:
         )
 
     def cancel(self) -> None:
+        # Best effort: cancel every engine; engines not currently speaking
+        # treat it as a noop (their cancel is scoped to in-flight work only).
         for eng in self.engines:
             eng.cancel()
 

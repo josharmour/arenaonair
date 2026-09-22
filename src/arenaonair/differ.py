@@ -218,23 +218,90 @@ class EventDiffer:
         except Exception:
             pass
         self.card_lookup = card_lookup
-        # Cross-window dedupe / continuity state
-        self._seen_casts = set()          # (instanceId, seatId) tuples
-        self._last_match_id = None
-        self._last_stage = None
-        self._baseline_creatures = None   # seat -> count at match start
-        self._baseline_power = None       # seat -> summed power at match start
+        # Cross-window dedupe / continuity state ---------------------------
+        # SCOPE DISCIPLINE (S7.6): every accumulator below belongs to exactly
+        # one scope and is cleared by _reset_game_scope() / _reset_match_scope()
+        # before detectors run on the first snapshot of a new scope.
+        #
+        # GAME-scoped -- instance ids are recycled between games of a match,
+        # boards are emptied between games and turn numbers restart:
+        #   cast/tutor/recursion/trick/unfair dedup sets, board baselines,
+        #   per-turn cantrip history, stage tracking.
+        # MATCH-scoped -- opponent identity persists across games of one match:
+        #   archetype evidence accumulation (+ its already-(match_id,key)-ed
+        #   companions below).
+        self._seen_casts = set()          # GAME-scoped (instanceId, seatId)
+        self._last_match_id = None        # MATCH_START event emission guard
+        self._scope_match_id = None       # scope-partition sentinel
+        self._game_scope_open = False     # True between play-stage windows
+        self._last_stage = None           # GAME-scoped stage tracking
+        self._baseline_creatures = None   # GAME-scoped seat -> count at start
+        self._baseline_power = None       # GAME-scoped seat -> summed power
         self._window_msgs = []            # set per diff() call
-        self._seen_hand_online = set()    # (match_id, grp_id) tuples
-        self._detected_archetypes = set() # (match_id, seat) tuples
-        self._seen_tutors_cast = set()    # instanceId set
-        self._seen_graveyard_recursions = set()  # instanceId set
-        self._cards_played_by_seat = {}   # seat -> set of card names
-        self._seen_combat_tricks = set()  # instanceId set
-        self._seen_chump_blocks = set()   # (match_id, blocker_id, attacker_id) set
-        self._seen_unfair_plays = set()   # instanceId set
-        self._seen_counter_wars = set()   # (match_id, top_stack_id) set
-        self._cantrips_cast_this_turn = {} # (turn, seat) -> list of names
+        self._seen_hand_online = set()    # MATCH-scoped (match_id, grp_id)
+        self._detected_archetypes = set() # MATCH-scoped (match_id, seat)
+        self._seen_tutors_cast = set()    # GAME-scoped instanceId set
+        self._seen_graveyard_recursions = set()  # GAME-scoped instanceId set
+        self._cards_played_by_seat = {}   # MATCH-scoped seat -> card names
+        self._seen_combat_tricks = set()  # GAME-scoped instanceId set
+        self._seen_chump_blocks = set()   # MATCH-scoped triple keys
+        self._seen_unfair_plays = set()   # GAME-scoped instanceId set
+        self._seen_counter_wars = set()   # MATCH-scoped (match_id,top_iid)
+        self._cantrips_cast_this_turn = {} # GAME-scoped (turn, seat)->names
+
+    # ------------------------------------------------------- scope resets
+
+    def _reset_game_scope(self):
+        """Clear every GAME-scoped accumulator (new game began)."""
+        self._seen_casts.clear()
+        self._seen_tutors_cast.clear()
+        self._seen_graveyard_recursions.clear()
+        self._seen_combat_tricks.clear()
+        self._seen_unfair_plays.clear()
+        self._cantrips_cast_this_turn.clear()
+        self._baseline_creatures = None
+        self._baseline_power = None
+        self._last_stage = None
+
+    def _reset_match_scope(self):
+        """Clear every MATCH-scoped accumulator (new opponent/match)."""
+        self._cards_played_by_seat.clear()
+        self._detected_archetypes.clear()
+        self._seen_hand_online.clear()
+        self._seen_chump_blocks.clear()
+        self._seen_counter_wars.clear()
+
+    def _ensure_scope(self, cur):
+        """Partition accumulators before detectors run on this window.
+
+        Called at the top of every diff(); detects match changes via the
+        snapshot's match_meta and game boundaries via GameStage transitions
+        visible in the intervening messages. Resets happen BEFORE any detector
+        reads dedup/history state so a fresh scope never inherits stale keys.
+        """
+        try:
+            match_id = getattr(getattr(cur, "match_meta", None),
+                               "match_id", None)
+            if match_id != self._scope_match_id:
+                self._scope_match_id = match_id
+                self._reset_match_scope()
+                self._reset_game_scope()
+                self._game_scope_open = False
+
+            stage_now = self._latest_stage(self._window_msgs)
+            if stage_now == "gamestage_play":
+                if not self._game_scope_open:
+                    # First snapshot inside a newly opened game.
+                    self._reset_game_scope()
+                    self._game_scope_open = True
+            elif stage_now == "gamestage_gameover":
+                # Close the game scope so the next play-stage window starts a
+                # fresh one even inside the same match. NOTE: deliberately
+                # does NOT touch _last_stage -- detect_game_end needs to see
+                # the pre-gameover value to fire its one GAME_END event.
+                self._game_scope_open = False
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ API
 
@@ -247,6 +314,9 @@ class EventDiffer:
 
     def _diff_inner(self, prev, cur, msgs):
         self._window_msgs = list(msgs)
+        # Scope partitioning FIRST: fresh scopes are reset before any
+        # detector reads dedup/history state (S7.6).
+        self._ensure_scope(cur)
         events = []
         events.extend(self.detect_game_start(prev, cur))
         events.extend(self.detect_game_end(prev, cur))
@@ -412,9 +482,17 @@ class EventDiffer:
     def detect_resolve_and_counter(self, prev, cur):
         """Stack objects disappearing this window -> resolve or counter.
 
-        Counter heuristic: a stack->graveyard disappearance counts as a counter
-        ONLY when another spell remains on the stack afterwards; otherwise it
-        classifies as a resolve.
+        Evidence discipline (S7.8): a stack->graveyard disappearance alone is
+        AMBIGUOUS -- it happens both when a spell is countered and when an
+        instant/sorcery simply finishes resolving above another spell.
+        Classification therefore requires affirmative evidence:
+
+        - An AnnotationType_ZoneTransfer whose category mentions "counter"
+          naming the instance -> COUNTER (authoritative).
+        - A counterspell object sitting on the stack in ``prev`` while the
+          victim disappears -> COUNTER attributed to that spell's controller.
+        - Otherwise the transition is classified as a RESOLVE; no counter is
+          asserted and no countering player is invented from seat ordering.
         """
         try:
             prev_stack = _zone_object_ids(prev, ("stack",))
@@ -422,7 +500,7 @@ class EventDiffer:
             gone_ids = sorted(prev_stack - cur_stack)
             if not gone_ids:
                 return []
-            others_remain = bool(cur_stack)
+            counter_evidence = self._counter_evidence(prev, cur, gone_ids)
             out = []
             ts_base = getattr(cur, "ts", 0.0) or 0.0
             idx = 0
@@ -434,13 +512,17 @@ class EventDiffer:
                 name = getattr(ref, "name", None) if ref is not None else None
                 seat = getattr(ref, "controller_seat", None) \
                     if ref is not None else None
-                countered = dest == "graveyard" and others_remain
-                if countered:
+                actor = counter_evidence.get(iid)
+                if dest == "graveyard" and actor is not None:
+                    payload = {"name": name}
+                    if actor.get("by_seat") is not None:
+                        payload["countered_by_seat"] = actor["by_seat"]
+                    if actor.get("by_name"):
+                        payload["countered_by_name"] = actor["by_name"]
                     out.append(Event(
                         kind=ev.COUNTER,
                         seat=seat,
-                        payload={"name": name,
-                                 "countered_by_seat": self._counter_seat(cur)},
+                        payload=payload,
                         ts=ts_base + idx * 0.01,
                         salience=ev.SALIENCE_HIGH))
                 else:
@@ -459,6 +541,63 @@ class EventDiffer:
         except Exception:
             return []
 
+    def _counter_evidence(self, prev, cur, gone_ids):
+        """Affirmative counter evidence per disappeared instance id.
+
+        Returns {iid: {"by_seat": int|None, "by_name": str|None}} containing
+        ONLY ids with real evidence; absent key == unresolved transition.
+        Two sources, checked in order of authority:
+
+        1. ZoneTransfer annotations whose category mentions 'counter' and
+           whose affectedIds include the vanished instance.
+        2. A counterspell object that occupied the stack in ``prev`` -- its
+           controller is credited with countering whatever else left the
+           stack toward the graveyard this window.
+        """
+        evidence: dict[int, dict[str, Any]] = {}
+        try:
+            prev_stack = _zone_object_ids(prev, ("stack",))
+            # 1. Explicit annotation category.
+            for ann in _iter_annotations(self._window_msgs):
+                types = _annotation_types(ann)
+                if "AnnotationType_ZoneTransfer" not in types:
+                    continue
+                details = _detail_map(ann.get("details"))
+                cat = str(details.get("category") or "").lower()
+                if "counter" not in cat:
+                    continue
+                for aid in ann.get("affectedIds") or []:
+                    iid = _as_int(aid)
+                    if iid is None or iid not in gone_ids:
+                        continue
+                    affector = _as_int(ann.get("affectorId"))
+                    by_name = None
+                    affector_ref = ((cur.objects or {}).get(affector)
+                                    or ((prev.objects or {}).get(affector)
+                                        if prev else None))
+                    if affector_ref is not None:
+                        by_name = getattr(affector_ref, "name", None)
+                    evidence[iid] = {"by_seat": affector, "by_name": by_name}
+
+            # 2. Counterspell present on the previous stack.
+            if len(evidence) < len(gone_ids):
+                prev_objs = (prev.objects or {}) if prev else {}
+                for iid in sorted(prev_stack):
+                    ref = prev_objs.get(iid)
+                    name = getattr(ref, "name", None) if ref else None
+                    if not name or not is_counterspell(name):
+                        continue
+                    controller = getattr(ref, "controller_seat", None) \
+                        or getattr(ref, "owner_seat", None)
+                    for victim in gone_ids:
+                        if victim in evidence:
+                            continue
+                        evidence[victim] = {"by_seat": controller,
+                                            "by_name": name}
+        except Exception:
+            return evidence
+        return evidence
+
     def _destination_zone(self, prev, cur, iid):
         """Where did instance ``iid`` land? Best-effort zone-type lookup."""
         try:
@@ -474,18 +613,6 @@ class EventDiffer:
                 if iid in (zv.object_ids or ()):
                     return zt
             return None
-        except Exception:
-            return None
-
-    def _counter_seat(self, cur):
-        """Best-effort opposing seat of whoever countered."""
-        try:
-            seats = set()
-            for zv in ((cur.zones or {}) if cur is not None else {}).values():
-                if zv.owner_seat is not None:
-                    seats.add(zv.owner_seat)
-            ordered = sorted(s for s in seats if s is not None)
-            return ordered[0] if ordered else None
         except Exception:
             return None
 
@@ -1063,6 +1190,9 @@ class EventDiffer:
                 if seat == getattr(cur, "local_seat", None):
                     rem = remaining_deck_cards(cur)
                     if rem:
+                        # S7.9: respect corrected accounting -- when exact
+                        # composition is uncertain, do not claim exact counts.
+                        rem_uncertain = bool(getattr(rem, "uncertain", False))
                         candidates: list[tuple[str, int, int]] = []
                         for gid, cnt in rem.items():
                             info = self._get_card_info(gid)
@@ -1077,7 +1207,9 @@ class EventDiffer:
                             candidates.append((cname, cnt, prio))
                         if candidates:
                             candidates.sort(key=lambda c: (-c[2], -c[1], c[0]))
-                            target_name, target_count, _ = candidates[0]
+                            target_name = candidates[0][0]
+                            target_count = None if rem_uncertain \
+                                else candidates[0][1]
 
                 out.append(Event(
                     kind=ev.TUTOR_ANTICIPATION,

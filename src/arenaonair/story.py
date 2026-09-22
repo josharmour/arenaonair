@@ -374,6 +374,66 @@ class StoryModel:
         # survival-beat tracking (dropped low -> stabilized)
         self._below_low_since: dict[int | None, int] = {}
 
+        # Scope isolation (S7.6): narrative state must not bleed across
+        # matches or games.
+        self._match_id: str | None = None
+        self._last_turn_number: int | None = None
+
+    # -- scope isolation -----------------------------------------------------
+
+    def _reset_narrative_scope(self) -> None:
+        """Wipe ALL accumulated narrative state (new match or new game)."""
+        self._momentum = {}
+        self._prev_lives = {}
+        self._prev_bf_iids = set()
+        self._prev_stack_iids = set()
+        self._cadence = {}
+        self._first_update_done = False
+        self._turn = 0
+        self._last_active = None
+        self._arc = None
+        self._ledgers = {}
+        self._beats.clear()
+        self._last_callback_turn = None
+        self._spec_segment_used = False
+        self._below_low_since = {}
+        self._outs_fired_turn = None
+        self._topdeck_fired_turns = {}
+        if hasattr(self, "_prev_land_iids"):
+            self._prev_land_iids = {}
+        if hasattr(self, "_prev_bf_refs"):
+            self._prev_bf_refs = {}
+        if hasattr(self, "_prev_stack_refs"):
+            self._prev_stack_refs = {}
+
+    def _ensure_narrative_scope(self, state: GameState) -> None:
+        """Reset narrative bookkeeping on match change or game restart.
+
+        - MATCH boundary: ``match_meta.match_id`` differs from the one seen on
+          the previous update -> full reset (no inherited momentum, beats,
+          arcs or resource streaks from the previous opponent).
+        - GAME boundary within one match: ``turn_info.turn_number`` moves
+          BACKWARDS (a fresh game restarts turn numbering) -> full reset.
+          Conservative: equal-or-higher turn numbers never trigger a reset.
+        """
+        try:
+            mid = getattr(getattr(state, "match_meta", None), "match_id", None)
+            if mid != self._match_id:
+                self._match_id = mid
+                self._reset_narrative_scope()
+                return
+
+            tn = getattr(getattr(state, "turn_info", None), "turn_number",
+                         None)
+            if isinstance(tn, int) and not isinstance(tn, bool):
+                if (self._last_turn_number is not None
+                        and tn < self._last_turn_number):
+                    # New game inside the same match.
+                    self._reset_narrative_scope()
+                self._last_turn_number = tn
+        except Exception:
+            pass
+
     # -- public API ---------------------------------------------------------
 
     def update(self, state: GameState) -> list[Event]:
@@ -423,6 +483,11 @@ class StoryModel:
             if not rem:
                 return []
 
+            # S7.9: when deck composition cannot be established exactly
+            # (hidden zones / reconciliation trimming), the commentary must
+            # not claim unsupported exact counts or probabilities.
+            uncertain = bool(getattr(rem, "uncertain", False))
+
             sweepers: list[tuple[str, int]] = []
             for gid, cnt in rem.items():
                 info = self._get_card_info(gid)
@@ -435,18 +500,34 @@ class StoryModel:
 
             sweepers.sort(key=lambda x: (-x[1], x[0]))
             target_name, target_count = sweepers[0]
-            self._outs_fired_turn = self._turn
-            return [_event(
-                ev.OUTS_ANTICIPATION,
-                local_seat,
-                {
+            if uncertain:
+                detail = (
+                    f"{my_life} life remaining; at least one "
+                    f"{target_name} may still be in the deck")
+                payload = {
+                    "target_name": target_name,
+                    "target_count": None,
+                    "card_name": target_name,
+                    "life": my_life,
+                    "opp_power": opp_power,
+                    "uncertain": True,
+                    "detail": detail,
+                }
+            else:
+                payload = {
                     "target_name": target_name,
                     "target_count": target_count,
                     "card_name": target_name,
                     "life": my_life,
                     "opp_power": opp_power,
-                    "detail": f"{my_life} life remaining, drawing to {target_count} {target_name} in deck",
-                },
+                    "detail": f"{my_life} life remaining, drawing to "
+                              f"{target_count} {target_name} in deck",
+                }
+            self._outs_fired_turn = self._turn
+            return [_event(
+                ev.OUTS_ANTICIPATION,
+                local_seat,
+                payload,
                 ts,
             )]
         except Exception:
@@ -456,6 +537,10 @@ class StoryModel:
         if state is None:
             return []
         ts = float(getattr(state, "snapshot_id", 0) or 0)
+
+        # Scope isolation FIRST: a new match or a restarted game begins with
+        # clean narrative books (S7.6).
+        self._ensure_narrative_scope(state)
 
         active = getattr(getattr(state, "turn_info", None), "active_player", None)
         if active != self._last_active:

@@ -439,9 +439,19 @@ class ArenaOnAirApp:
             self._last_utterance = utt.text
             self._last_speech_time = time.monotonic()
             self._await_delivery(utt)
-            removed = self.queue.flush(seal_target)
-            logger.info("%s sealed match %s (flushed %d)",
-                        event.kind, seal_target, removed)
+            if event.kind == "game_end":
+                # Game boundary only: purge obsolete game commentary but keep
+                # the queue able to narrate subsequent games of the SAME match
+                # (Bo3) and the final match-end announcement under this id.
+                removed = self.queue.close_game(seal_target)
+                logger.info("%s closed game %s (removed %d obsolete utterance(s))",
+                            event.kind, seal_target, removed)
+            else:
+                # Permanent match closure: seal so late re-enqueues cannot
+                # resurrect speech for a finished match.
+                removed = self.queue.flush(seal_target)
+                logger.info("%s sealed match %s (flushed %d)",
+                            event.kind, seal_target, removed)
             return
 
         # Preempt in-flight mundane speech if an electric event arrives
