@@ -270,7 +270,11 @@ class ArenaOnAirApp:
         interval = max(0.005, float(self.config.poll_interval))
 
         while not self._stop_event.is_set():
-            lines = watcher.poll()
+            try:
+                lines = watcher.poll()
+            except Exception:
+                logger.exception("watcher poll raised; stopping watch loop")
+                return
             if not lines:
                 idle_polls += 1
                 if self.once_mode and idle_polls >= IDLE_POLLS_BEFORE_DONE:
@@ -287,10 +291,15 @@ class ArenaOnAirApp:
 
             idle_polls = 0
             for ts, raw in lines:
-                prev_snap, backlog = self._feed_line(prev_snap,
-                                                     backlog,
-                                                     ts,
-                                                     raw)
+                try:
+                    prev_snap, backlog = self._feed_line(prev_snap,
+                                                         backlog,
+                                                         ts,
+                                                         raw)
+                except Exception:
+                    logger.exception("watcher feed_line raised on %r",
+                                     raw[:120])
+                    raise
                 if self._stop_event.is_set():
                     return
 
