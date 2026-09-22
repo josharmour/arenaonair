@@ -757,6 +757,12 @@ class TestS710AfplayStatus:
 
         eng = KokoroEngine(player_bin="/usr/bin/aplay")
         monkeypatch.setattr(eng, "_get_pipeline", lambda: _FakePipeline(1))
+        # Force the subprocess-player path on EVERY OS (win32 would otherwise
+        # dispatch to sounddevice/PortAudio, which fails differently on
+        # audio-less CI runners before the scripted player ever runs).
+        monkeypatch.setattr(
+            type(eng), "_play_chunk",
+            lambda self, pcm, sr, generation=0: self._play_aplay(pcm, sr))
 
         def fake_run(cmd, **kwargs):
             # Only intercept the player invocation; anything else (none
@@ -767,8 +773,11 @@ class TestS710AfplayStatus:
         monkeypatch.setattr("subprocess.run", fake_run)
         res = eng.speak(mk("afplay-dead"))
         assert res.ok is False
-        # Actionable reason traveled to the delivery layer.
-        assert "playback exited 1" in res.reason
+        # Actionable reason traveled to the delivery layer. The exact verb
+        # differs by playback path (afplay on darwin, aplay elsewhere) but
+        # both carry the exit status.
+        assert ("afplay exited 1" in res.reason
+                or "playback exited 1" in res.reason), res.reason
 
 
 
