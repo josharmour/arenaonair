@@ -393,6 +393,27 @@ def test_life_change_cannot_be_explained_as_tutor_payment_even_if_auditor_agrees
     assert not q.pending() and b.counts['unsupported_causality'] == 1
 
 
+def test_recorded_life_source_supports_a_causal_call_and_brings_its_rules():
+    from types import SimpleNamespace
+    b, q, _, w, _ = setup_booth()
+    b.carddb = SimpleNamespace(lookup=lambda gid: SimpleNamespace(
+        name='Phyrexian Arena', mana_cost='{1}{B}{B}', type_line='Enchantment',
+        oracle_text='At the beginning of your upkeep, you draw a card and you lose 1 life.') if gid == 7 else None)
+    # The recorded source makes the card's effect an observation, not a rule stated as certain.
+    w.output = lambda c: {'turns': [{'role': 'play_by_play', 'text': 'Bob draws off Phyrexian Arena and loses a life.',
+                                     'refs': c['new_events'] + ['card:7']}]}
+    work = run(b, Event('life_change', 2, {'from': 20, 'to': 19, 'delta': -1,
+                                           'source_name': 'Phyrexian Arena', 'source_grp_id': 7}, 0, 1))
+    assert work.context['facts']['card:7']['name'] == 'Phyrexian Arena'
+    assert len(q.pending()) == 1 and not b.counts['unsupported_causality']
+    # Without a recorded source the same line is an inference.
+    context = {'facts': {'event:1': {'kind': 'life_change', 'data': {'from': 20, 'to': 19, 'delta': -1}},
+                         'card:7': work.context['facts']['card:7']}, 'new_events': ['event:1'], 'heard': [], 'earlier_points': []}
+    with pytest.raises(ModelError, match='unsupported_rule'):
+        validate_output({'turns': [{'role': 'play_by_play', 'text': 'Bob draws off Phyrexian Arena and loses a life.',
+                                    'refs': ['event:1', 'card:7']}]}, context)
+
+
 def test_no_claim_of_unblocked_damage_without_block_evidence():
     b, q, _, w, _ = setup_booth()
     w.output = lambda c: {'turns': [{'role': 'play_by_play',
@@ -473,6 +494,71 @@ def test_uncited_card_rules_and_unobserved_attack_targets_rejected(text):
     w.output = lambda c: {'turns': [{'role': 'color_analyst', 'text': text, 'refs': c['new_events']}]}
     run(b, Event('attack_declared', 1, {'attackers': [{'instance_id': 10, 'name': 'Pup'}]}, 0, 2))
     assert not q.pending()
+
+
+def combat_snapshot(*others):
+    pup = CardRef(10, 5, 'Pup', 'Creature — Dog', ('creature',), power=2, toughness=2, controller_seat=1)
+    objects = {o.instance_id: o for o in (pup, *others)}
+    return snapshot(zones={'battlefield:pub': ZoneView(1, 'battlefield', None, tuple(objects))},
+                    objects=objects, turn_info=TurnInfo(4, 1, 'combat/declareattack'))
+
+
+def test_attack_may_name_the_player_only_when_the_rules_force_that_target():
+    attack = Event('attack_declared', 1, {'attackers': [{'instance_id': 10, 'name': 'Pup'}]}, 0, 2)
+    walker = CardRef(20, 6, 'Jace', 'Legendary Planeswalker — Jace', ('planeswalker',), loyalty=3, controller_seat=2)
+    for snap, forced in ((combat_snapshot(), True), (combat_snapshot(walker), False)):
+        b, q, _, w, _ = setup_booth()
+        w.output = lambda c: {'turns': [{'role': 'play_by_play', 'text': 'The Pup swings at Bob.', 'refs': c['new_events']}]}
+        work = run(b, attack, snap)
+        fact = work.context['facts'][work.context['new_events'][0]]
+        assert fact['player'] == 'Alice'  # only the active player attacks
+        if forced:
+            assert fact['data']['defending_player'] == 'Bob'
+            assert len(q.pending()) == 1
+        else:  # Bob's planeswalker could be the one under attack
+            assert 'defending_player' not in fact['data']
+            assert not q.pending() and b.counts['unsupported_target'] == 1
+
+
+def test_creature_events_carry_observed_power_toughness_and_turn():
+    b, q, _, w, _ = setup_booth()
+    elf = CardRef(10, 5, 'Elf', 'Creature — Elf', ('creature',), power=1, toughness=1, controller_seat=1)
+    w.output = lambda c: {'turns': [{'role': 'play_by_play', 'text': 'Alice casts a one-one Elf.', 'refs': c['new_events']}]}
+    work = run(b, Event('cast', 1, {'name': 'Elf', 'grp_id': 5, 'instance_id': 10}, 0, 2),
+               snapshot(objects={10: elf}, turn_info=TurnInfo(3, 2, 'main1')))
+    fact = work.context['facts'][work.context['new_events'][0]]
+    assert (fact['data']['power'], fact['data']['toughness']) == (1, 1)
+    assert (fact['turn'], fact['phase'], fact['active_player']) == (3, 'main1', 'Bob')
+    assert len(q.pending()) == 1
+
+
+@pytest.mark.parametrize('to_zone, spoken', [('battlefield', True), ('graveyard', False)])
+def test_only_a_permanent_reaching_the_battlefield_is_announced_as_resolved(to_zone, spoken):
+    b, q, _, w, _ = setup_booth()
+    w.output = lambda c: {'turns': [{'role': 'play_by_play', 'text': 'The Elf resolves.', 'refs': c['new_events']}]}
+    work = run(b, Event('resolve', 1, {'name': 'Elf', 'grp_id': 5, 'instance_id': 10, 'to_zone': to_zone}, 0, 2))
+    kind = work.context['facts'][work.context['new_events'][0]]['kind']
+    assert kind == ('resolved' if spoken else 'stack_departure')
+    assert bool(q.pending()) is spoken
+
+
+def test_unspoken_lines_reach_the_local_log_but_not_copied_reports(caplog):
+    import logging
+    from arenaonair.diagnostics import BugReportLogs
+    b, q, _, w, _ = setup_booth()
+    w.output = lambda c: {'turns': [{'role': 'play_by_play', 'text': 'Opt resolves.', 'refs': c['new_events']}]}
+    logs = BugReportLogs()
+    booth_logger = logging.getLogger('arenaonair.llm_booth')
+    booth_logger.addHandler(logs)
+    try:
+        with caplog.at_level(logging.INFO, logger='arenaonair.llm_booth'):
+            run(b, cast(kind='resolve'))
+    finally:
+        booth_logger.removeHandler(logs)
+    unspoken = [r for r in caplog.records if 'Opt resolves.' in r.getMessage()]
+    assert [r.getMessage().split(' (')[0] for r in unspoken] == ['LLM booth rewriting', 'LLM booth did not speak']
+    assert all(r.game_event_kind == 'llm_commentary' for r in unspoken)
+    assert 'Opt resolves' not in logs.text() and 'unsupported_resolution' in logs.text()
 
 
 def test_unknown_or_truncated_public_zone_never_claims_complete_board():

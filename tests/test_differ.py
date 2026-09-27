@@ -399,6 +399,11 @@ class TestAttackBlock:
 # life_change + salience ladder
 # ---------------------------------------------------------------------------
 
+def modified_life(affector, seat, amount):
+    return {"affectorId": affector, "affectedIds": [seat], "type": ["AnnotationType_ModifiedLife"],
+            "details": [{"key": "life", "type": "KeyValuePairValueType_int32", "valueInt32": [amount]}]}
+
+
 class TestLifeChange:
 
     def test_life_delta_payload(self):
@@ -409,6 +414,35 @@ class TestLifeChange:
         assert len(changes) == 1
         assert changes[0].seat == 2
         assert changes[0].payload == {"from": 20, "to": 14, "delta": -6}
+
+    def _sourced_change(self, lives, annotations):
+        from types import SimpleNamespace
+        # Phyrexian Arena's upkeep trigger and a fetchland's ability, as the GRE sends them.
+        arena = CardRef(453, 99236, None, None, (), controller_seat=2,
+                        object_type="GameObjectType_Ability", source_grp_id=77062)
+        tarn = CardRef(641, 12345, None, None, (), controller_seat=2,
+                       object_type="GameObjectType_Ability", source_grp_id=88)
+        names = {77062: "Phyrexian Arena", 88: "Scalding Tarn"}
+        d = EventDiffer(card_lookup=lambda gid: SimpleNamespace(name=names[gid]) if gid in names else None)
+        prev = make_state(1, lives=(20, 20), stack_cards=(arena, tarn))
+        cur = make_state(2, lives=lives)
+        (change,) = of_kind(d.diff(prev, cur, [gsm_msg({"annotations": annotations})]), ev.LIFE_CHANGE)
+        return change.payload
+
+    def test_life_change_names_the_source_the_game_recorded(self):
+        payload = self._sourced_change((20, 19), [modified_life(453, 2, -1)])
+        assert payload == {"from": 20, "to": 19, "delta": -1,
+                           "source_name": "Phyrexian Arena", "source_grp_id": 77062}
+
+    @pytest.mark.parametrize("annotations", [
+        [],                                                                 # no record
+        [{"affectorId": 453, "affectedIds": [2], "type": ["AnnotationType_ModifiedLife"]}],  # no amount
+        [modified_life(453, 2, -1)],                        # explains 1 of 2
+        [modified_life(453, 2, -1), modified_life(641, 2, -1)],  # two causes
+    ])
+    def test_life_change_cause_unknown_unless_one_source_explains_it_all(self, annotations):
+        payload = self._sourced_change((20, 18), annotations)
+        assert "source_name" not in payload
 
     def test_no_event_when_life_unchanged(self):
         d = EventDiffer()

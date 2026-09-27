@@ -58,6 +58,7 @@ class CardRef:
     is_token: bool | None = None
     is_tapped: bool | None = None
     object_type: str | None = None
+    source_grp_id: int | None = None  # an ability's source card (GRE objectSourceGrpId)
 
 
 @dataclass(frozen=True)

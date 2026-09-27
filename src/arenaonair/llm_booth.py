@@ -32,7 +32,7 @@ EVENT_FIELDS = {
     "resolve": ("name", "grp_id", "instance_id", "to_zone"),
     "counter": ("name", "grp_id", "instance_id", "countered_by_name", "countered_by_seat"),
     "land_drop": ("name", "grp_id", "instance_id"),
-    "life_change": ("from", "to", "delta"),
+    "life_change": ("from", "to", "delta", "source_name", "source_grp_id"),
     "attack_declared": ("attackers", "count"),
     "block_declared": ("blocks", "count"),
     "combat_damage": ("amount", "source_instance", "target_seat"),
@@ -96,9 +96,15 @@ instance IDs, log records, data quality, or event references aloud. Talk about t
 game. Do not infer attack targets when the event supplies none. A mulligan count
 supports only that count, not hand size, redraw mechanics or player intentions.
 Observed events are historical; state facts describe NOW. A cast is not resolution.
+An event's turn, phase and active_player say when it was observed; its type_line and
+power/toughness are the object's as observed. An attack's player is the attacker, and its
+defending_player, when present, is the only possible target.
 A stack_departure is only a zone observation, NOT proof the spell resolved or was
-countered. Do not infer targets, intention, mana paid from mana cost,
-or life-loss causation from event order. Rules describe conditional possibilities,
+countered. A 'resolved' event is a permanent spell that did resolve and entered the
+battlefield; what it did on entering is still unobserved. Do not infer targets, intention, mana paid from mana cost,
+or life-loss causation from event order: a life_change's cause is known only when it
+carries source_name (the card the game recorded as changing it; cite its card fact
+to say how). Rules describe conditional possibilities,
 not outcomes already observed. Unknown hands, rules, results and payments stay unknown.
 Only 'heard' and 'earlier_points' were actually delivered. Never callback to pending
 or generated speech. Cite a heard ID for callbacks. Later turns depend on all prior
@@ -162,12 +168,17 @@ tags are community classifications, not observed effects. EDHREC rankings suppor
 Commander popularity only, never win rate, power, or Arena metagame prevalence.
 Game Changer must be sourced as true AND explicitly described as a Commander list
 designation. Source dates/URLs/IDs are provenance, not game numbers or outcomes.
-A cast does not establish an effect, target or successful resolution. Distinguish
+A cast does not establish an effect, target or successful resolution. An event's
+turn, phase and active_player are when it was observed; an attack's player is the
+attacker and its defending_player the player it attacks. A 'resolved' event proves
+that permanent spell resolved and entered the battlefield, not what it did. Distinguish
 THIS creature from the NEXT creature. A boon granted to the next creature spell
 cannot be claimed as counters on the card that grants that boon. Each pronoun and
 object of an effect must match the rules exactly. Do not apply effects backwards.
 A stack departure is not proof of resolution or countering. Check what is
 actually SAID, not just the IDs. A conditional must be explicitly conditional.
+A life_change's source_name is the game's own record of what changed that life
+total; without one, the cause is unknown.
 In particular: a life change after a tutor does NOT prove a tutor's life payment.
 "That is the tutor's price" asserts causality and MUST fail without causal evidence.
 "Pay life then search" does not match rules saying search, put in hand, shuffle,
@@ -234,7 +245,7 @@ FOCUS = {
                  'Balanced: keep routine plays to a few words or silence (land drops arrive as '
                  'context, not cues). Use analyst airtime on opponent cards and on what the game '
                  'state means.'},
-    'analysis': {'analyst_lines': 3, 'read_every': 1, 'quiet': frozenset({'land_drop', 'stack_departure'}),
+    'analysis': {'analyst_lines': 3, 'read_every': 1, 'quiet': frozenset({'land_drop', 'stack_departure', 'resolved'}),
                  'guidance': 'Mostly analysis: routine plays get silence or a few words. Spend airtime '
                  'on what the game state means: the race, the boards, resources, pressure and '
                  'opponent cards. Play-by-play still calls combat, big plays and game ends.'},
@@ -435,6 +446,29 @@ def _read_signature(read, coarse=False):
                     tuple(p.get('seat') for p in players if (p.get('turns_without_new_land') or 0) >= 2))
 
 
+def attack_seats(snap, attacker_ids):
+    """(attacking, defending) seats as far as the rules settle them, else None.
+
+    Only the active player attacks. Only players, planeswalkers and battles can
+    be attacked (rule 508.1b), so in a two-player game with none of the latter
+    in play the other player is the one attacked.
+    """
+    active = snap.turn_info.active_player
+    refs = [snap.objects.get(iid) for iid in attacker_ids]
+    if active is None or not refs or any(r is None or r.controller_seat != active for r in refs):
+        return None, None
+    if len(snap.players) != 2 or active not in snap.players:
+        return active, None
+    battlefields = [z for z in snap.zones.values() if z.zone_type.lower().replace('zonetype_', '') == 'battlefield']
+    if not battlefields or not all(z.membership_known for z in battlefields):
+        return active, None
+    for iid in (i for z in battlefields for i in z.object_ids):
+        ref = snap.objects.get(iid)
+        if ref is None or not ref.card_types or {'planeswalker', 'battle'} & set(ref.card_types):
+            return active, None
+    return active, next(seat for seat in snap.players if seat != active)
+
+
 def state_facts(snap, carddb, now):
     facts = {'state:turn': {'turn': snap.turn_info.turn_number,
               'active_player': snap.turn_info.active_player, 'phase': snap.turn_info.phase,
@@ -531,18 +565,22 @@ def validate_output(output, context, roles=ROLES):
         if (stage.get('turn') == 0 and 'start' in (stage.get('stage') or '').lower() and
                 re.search(r'\b(?:underway|turn one|first turn|play has begun)\b', text, re.I)):
             raise ModelError('unsupported_resolution')
-        # The current input never establishes successful resolution. Card-rule
+        # Only a cited 'resolved' event (a permanent seen arriving on the
+        # battlefield) establishes successful resolution. Card-rule
         # explanations must remain explicitly conditional, even if the model
         # auditor mistakenly approves fluent present-tense narration.
-        if (re.search(r"\bresolv(?:e[sd]?|ing)|\bresolution\b", text, re.I) and
+        resolved = any(known[r].get('kind') == 'resolved' for r in refs)
+        if (not resolved and re.search(r"\bresolv(?:e[sd]?|ing)|\bresolution\b", text, re.I) and
                 not re.search(r"\b(?:if|when|once|would|could)\b|on resolv|after.{0,30}resolv|before.{0,30}resolv", text, re.I)):
             raise ModelError('unsupported_resolution')
-        if re.search(r'\b(?:that|this|it|spell) resolves\b', text, re.I) and not re.search(
+        if not resolved and re.search(r'\b(?:that|this|it|spell) resolves\b', text, re.I) and not re.search(
                 r'\b(?:if|when|once|before|after)\s+(?:that|this|it|the spell) resolves\b', text, re.I):
             raise ModelError('unsupported_resolution')
-        # No event in this input contract carries authoritative effect-to-life
-        # causality. Do not let a fluent auditor invent that missing edge.
-        if 'life_change' in new_kinds and re.search(
+        # Only a cited life change whose source the game recorded carries
+        # effect-to-life causality. Do not let a fluent auditor invent that edge.
+        sourced = any(known[r].get('kind') == 'life_change' and (known[r].get('data') or {}).get('source_name')
+                      for r in refs)
+        if 'life_change' in new_kinds and not sourced and re.search(
                 r"\b(?:trigger|price|paid|pays?|costs?|because|thanks|caused|causes|flagged|predicted|expected|anticipated)\b|that's (?:the|that|this)", text, re.I):
             raise ModelError('unsupported_causality')
         if re.search(r"shuffl\w*.{0,35}(?:into|to) (?:her |his |their |the |a )?hand", text, re.I):
@@ -566,7 +604,10 @@ def validate_output(output, context, roles=ROLES):
                 raise ModelError('unsupported_meta')
             if not any(all(p['name'].lower() in text.lower() for p in c['pieces']) for c in combos):
                 raise ModelError('unsupported_meta')
-        if any(f.get('rules') for f in cited) and re.search(
+        # A life change the game attributes to a cited card is that card's
+        # effect observed, not a rule stated as certain.
+        observed = {(f.get('data') or {}).get('source_name') for f in cited if f.get('kind') == 'life_change'}
+        if any(f.get('rules') and f.get('name') not in observed for f in cited) and re.search(
                 r'\b(?:gains?|draws?|puts?|gets?|creates?|searches?|loses?|adds?|makes?|returns?|deals?|untaps?|shuffles?)\b', text, re.I):
             if not re.search(r'\b(?:if|when|whenever|can|could|would|once)\b', text, re.I):
                 raise ModelError('unsupported_rule')
@@ -576,9 +617,13 @@ def validate_output(output, context, roles=ROLES):
         if re.search(rule_language, text, re.I) and not (combos or re.search(r'"rules":\s*"[^"\s]', evidence)):
             raise ModelError('unsupported_rule')
         if 'attack_declared' in new_kinds and 'combat_damage' not in new_kinds:
+            # A cited attack whose target the rules force may name that player.
+            defenders = {f['data'].get('defending_player') for f in cited
+                         if f.get('kind') == 'attack_declared' and isinstance(f.get('data'), dict)}
             for key, fact in context['facts'].items():
                 name = fact.get('name') if key.startswith('state:player:') else None
-                if name and re.search(r'\b(?:towards?|at|attacks?)\s+' + re.escape(name) + r'\b', text, re.I):
+                if (name and name not in defenders and
+                        re.search(r'\b(?:towards?|at|attacks?)\s+' + re.escape(name) + r'\b', text, re.I)):
                     raise ModelError('unsupported_target')
         if (re.search(r"next creature spell|one.time boon", evidence, re.I) and
                 re.search(r"\b(?:boon|counters?)\b", text, re.I) and not re.search(r"\bnext\b|one.time", text, re.I)):
@@ -774,8 +819,12 @@ class GenerativeBooth:
             self.seq += 1
             payload = {k: _clean(event.payload[k]) for k in EVENT_FIELDS[event.kind] if k in event.payload}
             # Our legacy differ labels stack disappearance as RESOLVE. Do not
-            # elevate that inference to a successful result in the LLM path.
-            kind = 'stack_departure' if event.kind == 'resolve' else event.kind
+            # elevate that inference to a successful result in the LLM path,
+            # except that a spell arriving on the battlefield is a permanent
+            # spell that resolved (rule 608.3): there's no other way there.
+            kind = event.kind
+            if event.kind == 'resolve':
+                kind = 'resolved' if event.payload.get('to_zone') == 'battlefield' else 'stack_departure'
             if event.kind == 'counter' and event.payload.get('counter_evidence') != 'annotation':
                 kind = 'stack_departure'
                 payload.pop('countered_by_name', None)
@@ -802,11 +851,13 @@ class GenerativeBooth:
                         self.counts['duplicate_combat'] += 1
                         return
                     self.combat_events.append(combat_key)
-            source = None
+            source = defender = None
             if event.kind == 'combat_damage':
                 source = snap.objects.get(payload.get('source_instance'))
                 # Legacy differ can infer the actor by elimination. Avoid that inference.
                 seat = source.controller_seat if source else None
+            elif event.kind == 'attack_declared':
+                seat, defender = attack_seats(snap, [row.get('instance_id') for row in payload['attackers']])
             else:
                 seat = event.seat
             iid = payload.get('instance_id')
@@ -825,9 +876,22 @@ class GenerativeBooth:
                     payload['source_name'] = _clean(source.name)
                 if names.get(payload.get('target_seat')):
                     payload['target_player'] = _clean(names[payload['target_seat']])
+            if names.get(defender):
+                payload['defending_player'] = _clean(names[defender])
+            # The object's observed type line and power/toughness (card facts have no P/T).
+            ref = snap.objects.get(iid) if iid is not None else None
+            if ref is not None and ref.type_line:
+                payload['type_line'] = _clean(ref.type_line)
+            if (ref is not None and 'creature' in (ref.card_types or ()) and
+                    isinstance(ref.power, int) and isinstance(ref.toughness, int)):
+                payload['power'], payload['toughness'] = ref.power, ref.toughness
+            # When it was observed, so "at their upkeep" can be checked.
+            active = snap.turn_info.active_player
             record = on_air({'id': f'event:{self.epoch}:{self.seq}', 'kind': kind, 'seat': seat,
                 'player': _clean(names.get(seat)) if seat is not None else None,
-                'data': payload, 'turn': snap.turn_info.turn_number, 'play_id': play, 'source': 'observed_GRE',
+                'data': payload, 'turn': snap.turn_info.turn_number, 'phase': _clean(snap.turn_info.phase),
+                'active_player': _clean(names.get(active)) if active is not None else None,
+                'play_id': play, 'source': 'observed_GRE',
                 'salience': event.salience, 'received': self.now()}, self._said_names(snap))
             if event.kind == 'resolve' and play and any(play in h.get('play_ids', []) for h in self.heard):
                 self.counts['discussed_play'] += 1
@@ -862,7 +926,7 @@ class GenerativeBooth:
                 facts[event['id']] = {k: v for k, v in event.items() if k not in ('received', 'salience')}
         gids = set()
         for event in events:
-            gid = event['data'].get('grp_id')
+            gid = event['data'].get('grp_id') or event['data'].get('source_grp_id')
             iid = event['data'].get('instance_id')
             if not gid and self.snap and iid in self.snap.objects:
                 gid = self.snap.objects[iid].grp_id
@@ -924,7 +988,7 @@ class GenerativeBooth:
             self.batch_since = None
             discussed = {p for h in self.heard for p in h.get('play_ids', [])}
             events = [e for e in events if self.now() - e['received'] <= self.config.llm_max_age
-                      and not (e['kind'] == 'stack_departure' and e['play_id'] in discussed)]
+                      and not (e['kind'] in ('stack_departure', 'resolved') and e['play_id'] in discussed)]
             if not events:
                 self.counts['stale_pending'] += 1
                 return None
@@ -946,14 +1010,17 @@ class GenerativeBooth:
     def process(self, work):
         """Network work deliberately runs without the ingestion/delivery lock."""
         start = self.now()
+        output = None
         try:
             if hasattr(self.client, 'set_match'):
                 self.client.set_match(work.match_id)
             self._enrich(work.context)
             context = work.context
             for attempt in range(2):
+                output = None
                 try:
-                    turns = self._validated(self.client.generate(context), work)
+                    output = self.client.generate(context)
+                    turns = self._validated(output, work)
                     if self.closed or work.epoch != self.epoch or self.now() - work.started > self.config.llm_max_age:
                         raise ModelError('stale_response')
                     if turns and not self.client.verify(work.context, turns):
@@ -969,6 +1036,7 @@ class GenerativeBooth:
                     late = self.now() - work.started > min(self.config.llm_max_age / 2, REPAIR_WINDOW_S)
                     if attempt or not repairable or self.closed or work.epoch != self.epoch or late:
                         raise
+                    self._log_unspoken(str(exc), output, retrying=True)
                     with self.lock:
                         self.counts['repair_attempts'] += 1
                         self.counts['initial_' + str(exc)] += 1
@@ -994,9 +1062,24 @@ class GenerativeBooth:
                     self.pending.clear()
                     self.batch_since = None
             logger.warning('LLM booth: %s (silence): %s', reason, describe_state(reason))
+            self._log_unspoken(reason, output)
         finally:
             with self.lock:
                 self.busy = False
+
+    def _log_unspoken(self, reason, output, retrying=False):
+        """Keep the wording of a line that wasn't spoken in the local log, so
+        rejections can be reviewed. Tagged as commentary: copied bug reports
+        omit it like spoken lines."""
+        turns = output.get('turns') if isinstance(output, dict) else None
+        if not isinstance(turns, list) or not turns:
+            return
+        lines = ' | '.join(f"{t.get('role')}: {t.get('text')} {t.get('refs')}"
+                           for t in turns[:3] if isinstance(t, dict))
+        issues = getattr(self.client, 'validation_issues', None) if reason == 'factual_rejection' else None
+        logger.info('LLM booth %s (%s): %s%s', 'rewriting' if retrying else 'did not speak', reason,
+                    lines[:1500], f' || fact-check: {issues}' if issues else '',
+                    extra={'game_event_kind': 'llm_commentary'})
 
     def _validated(self, output, work):
         """Validate an exchange; on a local rule failure keep its longest valid

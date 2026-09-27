@@ -853,10 +853,16 @@ class EventDiffer:
             return []
 
     def detect_life_change(self, prev, cur):
-        """players[seat].life differs prev -> cur; salience per ladder."""
+        """players[seat].life differs prev -> cur; salience per ladder.
+
+        The GRE names what changed a life total (ModifiedLife annotations):
+        when one source accounts for the whole change it rides along as
+        source_name/source_grp_id. Otherwise the cause stays unknown.
+        """
         try:
             players_prev = (prev.players or {}) if prev is not None else {}
             players_cur = (cur.players or {}) if cur is not None else {}
+            sources = self._life_sources(prev, cur)
             out = []
             ts_base = getattr(cur, "ts", 0.0) or 0.0
             idx = 0
@@ -870,17 +876,48 @@ class EventDiffer:
                     continue
                 delta = life_now - life_before
                 salience = life_salience(delta, life_now, self.cfg)
+                payload = {"from": life_before, "to": life_now, "delta": delta}
+                found = sources.get(seat) or []
+                named = {src for src, _ in found}
+                amounts = [amount for _, amount in found]
+                if (len(named) == 1 and None not in named and None not in amounts
+                        and sum(amounts) == delta):
+                    payload["source_name"], payload["source_grp_id"] = named.pop()
                 out.append(Event(kind=ev.LIFE_CHANGE,
                                  seat=seat,
-                                 payload={"from": life_before,
-                                          "to": life_now,
-                                          "delta": delta},
+                                 payload=payload,
                                  ts=ts_base + idx * 0.01,
                                  salience=salience))
                 idx += 1
             return out
         except Exception:
             return []
+
+    def _life_sources(self, prev, cur):
+        """seat -> [((name, grp_id) or None, amount)] from this window's
+        ModifiedLife annotations; an ability is named after its source card."""
+        found: dict[int, list] = {}
+        for ann in _iter_annotations(self._window_msgs):
+            if "AnnotationType_ModifiedLife" not in _annotation_types(ann):
+                continue
+            amount = _as_int(_detail_map(ann.get("details")).get("life"))
+            affector = _as_int(ann.get("affectorId"))
+            ref = (((cur.objects or {}).get(affector) if cur is not None else None)
+                   or ((prev.objects or {}).get(affector) if prev is not None else None))
+            source = None
+            if ref is not None and "ability" in (ref.object_type or "").lower():
+                info = (self.card_lookup(ref.source_grp_id)
+                        if ref.source_grp_id and self.card_lookup else None)
+                name = getattr(info, "name", None)
+                if name and " // " not in name:  # never guess which face
+                    source = (name, ref.source_grp_id)
+            elif ref is not None and ref.name:
+                source = (ref.name, ref.grp_id)
+            for aid in ann.get("affectedIds") or []:
+                seat = _as_int(aid)
+                if seat is not None:
+                    found.setdefault(seat, []).append((source, amount))
+        return found
 
     def detect_board_shift(self, prev, cur):
         """Creature-count / summed-power deltas crossing thresholds."""

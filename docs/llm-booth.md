@@ -157,10 +157,25 @@ resolved identities, and receiver age no greater than five seconds. Losing a
 source invalidates dependent work without disabling either voice.
 
 The LLM input treats legacy RESOLVE events as stack departures, not proof of
-successful resolution. Counter claims require explicit annotation evidence.
+successful resolution, unless the spell arrived on the battlefield: only a permanent
+spell that resolved gets there (rule 608.3), so that event is `resolved`. Counter
+claims require explicit annotation evidence.
 Combat request candidates without confirmed GRE attack/block states are excluded.
+An attack names its attacker (only the active player attacks) and, in a two-player
+game with no planeswalker or battle in play, the defending player (rule 508.1b).
+Events carry the turn, step and active player when observed, and the object's
+observed type line and power/toughness (printed card facts have no power/toughness),
+so a call citing only the event can still say "a four-four Elder Dragon". A September 26 replay of a
+live match found these missing facts behind 12 of 43 held-back lines ("during
+their upkeep", "a four-four", "Rofellos resolves").
 Damage without a known source controller does not invent an actor by elimination.
 Mana cost does not establish payment; event order does not establish causation.
+The game's own record does: when the GRE's ModifiedLife annotations name one source
+for a whole life change (an ability by its source card), the event carries
+`source_name` and that card's rules, the booth may say what caused it, and the rules
+check treats that card's effect as observed rather than stated as certain. Without
+one, the cause stays unknown. In the September 26 match 37 of 38 life changes named
+a source (Phyrexian Arena upkeeps, fetchlands, Sheoldred, The One Ring, Snuff Out).
 
 ### Game read and commentary focus
 
@@ -237,14 +252,17 @@ Every exchange turn depends on successful playback of the previous one. Queue
 expiry, pruning, failure, cancellation, or a missing anchor cascades through all
 subsequent turns. The existing speech pump routes each role to its configured
 voice. Only successful delivery enters the shared history; failed/interrupted
-speech cannot support a callback. Sixteen recent delivered lines and 24 older
+speech cannot support a callback. A started audio chunk always plays to its end,
+so a cancel that arrives during a line's last chunk leaves it delivered: reporting
+it interrupted once made the booth drop the next exchange and repeat the point. Sixteen recent delivered lines and 24 older
 points retain their wording, event references, and supporting facts. This is a
 bounded evidence-backed memory, not an invented model summary. Game boundaries
 reset it. Closing stops the worker and rejects late responses.
 
 The status window and copied report include safe model state, request latency,
 event-to-delivery age, pending count, and rejection/drop reasons. Role/text remain
-in local delivery logs. Copied reports conservatively omit **all LLM speech**,
+in local delivery logs, as do lines that weren't spoken, with their reason, citations
+and the fact-check's objection ("LLM booth did not speak", "LLM booth rewriting"). Copied reports conservatively omit **all LLM speech**,
 because a line can mix public and private facts. They exclude credentials,
 reasoning, and payloads; they do not export the evaluation transcripts below.
 

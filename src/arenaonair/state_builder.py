@@ -672,6 +672,7 @@ class GameStateBuilder:
             is_token=(raw.get("type") == "GameObjectType_Token") if raw.get("type") else None,
             is_tapped=raw.get("isTapped") if isinstance(raw.get("isTapped"), bool) else None,
             object_type=raw.get("type"),
+            source_grp_id=_as_int(raw.get("objectSourceGrpId")),
         )
 
 
