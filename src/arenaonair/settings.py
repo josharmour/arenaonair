@@ -47,8 +47,8 @@ SETTINGS: tuple[Setting, ...] = (
             bounds=(0.5, 2.0, 0.1), help="How fast the casters talk. 1.0 is the voice's natural pace."),
     # -- commentary -----------------------------------------------------------
     Setting("narration_mode", "Commentary", "Writer", "choice",
-            choices=(("auto", "AI booth when a model is connected"), ("llm", "AI booth"),
-                     ("legacy", "Scripted booth")), restart=True,
+            choices=(("auto", "Generative booth (connection required)"), ("llm", "AI booth"),
+                     ("legacy", "Scripted replay / diagnostics")), restart=True,
             help="The AI booth writes original lines with a language model; the scripted booth uses templates."),
     Setting("persona", "Commentary", "Style", "choice", choices=_PERSONAS,
             help="Tone for the AI booth and delivery pace for the scripted booth."),

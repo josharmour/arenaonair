@@ -270,6 +270,14 @@ def focus_settings(config):
 
 
 def describe_state(state: str) -> str:
+    if state == 'connection_required':
+        return 'connect the generative booth to start'
+    if state == 'trial_waiting_match':
+        return 'trial ready; waiting for an Arena match'
+    if state == 'http_402':
+        return 'trial finished; subscribe or connect your own provider'
+    if state in ('http_401', 'http_403'):
+        return 'connection denied; check your key or Patreon membership'
     if state in STATE_TEXT:
         return STATE_TEXT[state]
     if state.startswith('http_'):
@@ -284,8 +292,10 @@ class ModelError(Exception):
 class JsonClient:
     def __init__(self, config):
         self.base = config.llm_base_url.rstrip('/')
+        self.match_id = None
+        self.trial_status = None
         parsed = urllib.parse.urlsplit(self.base)
-        if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        if self.base and (parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment):
             raise ValueError('llm_base_url must be an HTTP(S) endpoint without credentials/query')
         self.model = config.llm_model
         self.timeout = config.llm_timeout
@@ -296,10 +306,13 @@ class JsonClient:
             if os.name != 'nt' and path.stat().st_mode & 0o077:
                 raise ValueError('LLM key file must have permissions 0600')
             self.key = path.read_text().strip()
-        if not self.key:
-            raise ValueError('Set ARENAONAIR_API_KEY or llm_key_file')
+
+    def set_match(self, match_id):
+        self.match_id = str(match_id) if match_id else None
 
     def _request(self, system, context):
+        if not self.base:
+            raise ModelError('connection_required')
         body = {'model': self.model, 'messages': [
             {'role': 'system', 'content': system},
             {'role': 'user', 'content': json.dumps(context, ensure_ascii=False)}],
@@ -318,9 +331,16 @@ class JsonClient:
                                                 'items': {'type': 'string', 'enum': refs}}}}}}}}}
         if self.profile == 'glm':
             body['chat_template_kwargs'] = {'thinking': True, 'reasoning_effort': 'low'}
+        from .connection import TRIAL_URL, TRIAL_ROOT, request_json, ConnectionError
+        headers = {'Content-Type': 'application/json', 'User-Agent': 'ArenaOnAir/0.1'}
+        if self.key:
+            headers['Authorization'] = 'Bearer ' + self.key
+        if self.base == TRIAL_URL:
+            if not self.match_id:
+                raise ModelError('trial_waiting_match')
+            headers['X-ArenaOnAir-Match'] = self.match_id
         req = urllib.request.Request(self.base + '/chat/completions',
-            data=json.dumps(body).encode(), headers={'Authorization': 'Bearer ' + self.key,
-            'Content-Type': 'application/json', 'User-Agent': 'ArenaOnAir/0.1'})
+            data=json.dumps(body).encode(), headers=headers)
         # Never forward the credential through an HTTP redirect.
         class NoRedirect(urllib.request.HTTPRedirectHandler):
             def redirect_request(self, *args, **kwargs):
@@ -328,6 +348,12 @@ class JsonClient:
         try:
             with urllib.request.build_opener(NoRedirect).open(req, timeout=self.timeout) as response:
                 raw = response.read(65537)
+            if self.base == TRIAL_URL and getattr(self, '_counted_match', None) != self.match_id:
+                try:
+                    self.trial_status = request_json(TRIAL_ROOT + '/status', self.key, timeout=3)
+                    self._counted_match = self.match_id
+                except ConnectionError:
+                    pass
             if len(raw) > 65536:
                 raise ModelError('response_size')
             choice = json.loads(raw)['choices'][0]
@@ -577,6 +603,7 @@ class Work:
     history_version: int
     heard_ids: frozenset = frozenset()
     inflight: tuple = ()             # tracked uids queued ahead of this exchange
+    match_id: str | None = None
 
 #: Generation may run while fewer than this many lines are still queued/speaking.
 #: Their results are known to the model as ``in_flight``; the new exchange is
@@ -913,12 +940,15 @@ class GenerativeBooth:
                 self.pipelined += 1
                 self.counts['pipelined'] += 1
             return Work(self.epoch, min(e['received'] for e in events), context, events, self.history_version,
-                        heard_ids=frozenset(self._heard_ids()), inflight=tuple(self.tracked))
+                        heard_ids=frozenset(self._heard_ids()), inflight=tuple(self.tracked),
+                        match_id=self.scope[0] if self.scope else None)
 
     def process(self, work):
         """Network work deliberately runs without the ingestion/delivery lock."""
         start = self.now()
         try:
+            if hasattr(self.client, 'set_match'):
+                self.client.set_match(work.match_id)
             self._enrich(work.context)
             context = work.context
             for attempt in range(2):

@@ -123,8 +123,14 @@ def run_checks(cfg, *, online: bool = False) -> list[Check]:
         detail, status, fix = "key from ARENAONAIR_API_KEY", OK, ""
         if not key:
             kf = Path(cfg.llm_key_file).expanduser() if cfg.llm_key_file else None
-            if kf is None or not kf.is_file():
-                status, detail, fix = FAIL, "no API key", "Run: arenaonair setup   (or set ARENAONAIR_API_KEY)"
+            if kf is None:
+                from .connection import HOSTED_URL, TRIAL_URL
+                if cfg.llm_base_url in (HOSTED_URL, TRIAL_URL):
+                    status, detail, fix = FAIL, "no API key", "Open Connect / subscription in the app."
+                else:
+                    detail = "provider without authentication"
+            elif not kf.is_file():
+                status, detail, fix = FAIL, "key file missing", "Open Connect / subscription in the app."
             elif os.name != "nt" and kf.stat().st_mode & 0o077:
                 status, detail, fix = FAIL, "key file readable by others", f"chmod 600 {kf}"
             else:
@@ -133,8 +139,9 @@ def run_checks(cfg, *, online: bool = False) -> list[Check]:
         if online and status == OK:
             checks.append(_probe_model(cfg))
     else:
-        checks.append(Check("Generative booth", WARN, "off: using the built-in template commentary",
-                            "Optional: run 'arenaonair setup' to connect an OpenAI-compatible model."))
+        checks.append(Check("Generative booth", WARN if cfg.narration_mode == "legacy" else FAIL,
+                            "Scripted diagnostics" if cfg.narration_mode == "legacy" else "Connection required",
+                            "Connect in the desktop app: five hosted matches, Patreon, or your own provider."))
 
     if cfg.overlay_port:
         with socket.socket() as s:
@@ -160,6 +167,10 @@ def _probe_model(cfg) -> Check:
     try:
         from .llm_booth import JsonClient
         client = JsonClient(cfg)
+        from .connection import TRIAL_URL, TRIAL_ROOT, request_json
+        if client.base == TRIAL_URL:
+            status = request_json(TRIAL_ROOT + "/status", client.key)
+            return Check("Model connection", OK, f"Hosted GLM 5.3: {status['matches_remaining']} free matches remaining")
         client._request("Reply with the JSON object {\"ok\": true}.", {"ping": True})
         return Check("Model reachable", OK, "test request succeeded")
     except Exception as exc:
@@ -251,19 +262,34 @@ def setup_main(argv=None, *, input_fn=input, getpass_fn=None) -> int:
         if path:
             answers["log_path"] = path
 
-    if _yes("Connect an AI model for original commentary? (requires a compatible API and your own key)", False, input_fn):
-        answers["base_url"] = _ask("API base URL including /v1", required=True, input_fn=input_fn)
-        answers["model"] = _ask("Model name (as your provider lists it)", required=True, input_fn=input_fn)
+    from . import connection
+    print("\nThe generative booth needs a model connection.")
+    print("Hosted use sends selected game facts and booth dialogue to our server; voices run locally.")
+    choice = _ask("Connection: trial (5 free matches), premium (Patreon key), custom, or later (desktop dialog)",
+                  "trial", choices=("trial", "premium", "custom", "later"), input_fn=input_fn)
+    if choice == "trial":
+        try:
+            values, status = connection.start_trial(target)
+            answers.update(values)
+            print(f"{status['matches_remaining']} free matches remaining. Subscribe: {connection.SUBSCRIBE_URL}")
+        except connection.ConnectionError as exc:
+            print(f"{exc} You can reconnect from the desktop dialog.")
+    elif choice in ("premium", "custom"):
+        print(f"Subscribe or get your Patreon key: {connection.SUBSCRIBE_URL}")
+        answers["base_url"] = connection.HOSTED_URL if choice == "premium" else connection.endpoint(
+            _ask("API endpoint (including /v1)", required=True, input_fn=input_fn))
+        answers["model"] = connection.MODEL if choice == "premium" else _ask(
+            "Model name (as your provider lists it)", required=True, input_fn=input_fn)
         answers["profile"] = "glm" if "glm" in answers["model"].lower() else "generic"
-        key = getpass_fn("API key (input hidden; stored in a 0600 file, never in config): ").strip()
+        key = getpass_fn("API key (hidden; blank only for a provider without authentication): ").strip()
         key_file = Path.home() / ".config" / "arenaonair" / "llm.key"
-        key_file.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(key_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as fh:
-            fh.write(key + "\n")
-        if os.name != "nt":
-            os.chmod(key_file, 0o600)
-        answers["key_file"] = str(key_file)
+        answers["key_file"] = str(connection.write_key(key_file, key)) if key else ""
+        if choice == "premium":
+            try:
+                if connection.MODEL not in connection.models(connection.HOSTED_URL, key):
+                    print("GLM 5.3 is not available to this key. Reconnect from the desktop dialog.")
+            except connection.ConnectionError as exc:
+                print(str(exc))
 
     if _yes("Do you stream with OBS?", False, input_fn):
         answers["stream"] = True

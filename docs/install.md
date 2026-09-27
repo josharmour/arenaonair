@@ -7,8 +7,9 @@ works; Git is only needed if you choose to clone and pull updates.
 The app supports Windows, macOS, and Linux. Linux requires Arena running through
 Wine/Proton and a graphical desktop for the status window. A GPU is not required:
 neural speech uses the CPU by default. Dependency and model downloads need several
-GB of disk space and an internet connection on first use. Normal scripted
-commentary runs locally after the voices and card data have been downloaded.
+GB of disk space and an internet connection on first use. Hosted generative
+commentary needs internet access during play. Fully local use requires configuring
+your own local language model in addition to the local voices.
 
 ## Launcher commands
 
@@ -100,12 +101,11 @@ are described separately in [sharing logs](shared-logs.md).
 | Kokoro/phonemizer reports missing eSpeak | Install [eSpeak NG](https://github.com/espeak-ng/espeak-ng/releases). On macOS with Homebrew use `brew install espeak-ng`; on Debian/Ubuntu use `sudo apt-get install espeak-ng`. Restart the app afterward. |
 | No sound | Check the OS output device and volume; use **Hear the booth** outside a match. On Linux install `alsa-utils` and confirm `aplay` can use your output device. |
 | Linux window fails to load Qt's platform plugin | Install the desktop libraries listed in the README, including `libxcb-cursor0` and `libxkbcommon-x11-0`; run in a graphical desktop session. |
-| AI status shows an error or the booth stays silent | Run `doctor --online` to test the configured model (may incur an API charge), check endpoint/model/key, or choose **Scripted booth** under Settings → Commentary → Writer. See [AI setup](llm-booth.md#connect-your-model). |
+| AI status shows an error or the booth stays silent | Run `doctor --online` to test the configured model (may incur an API charge), check endpoint/model/key, or open **Connect / subscription…** to change providers or subscribe. See [AI setup](llm-booth.md#connect-your-model). |
 | Desktop launcher fails after moving files | Run `install-app` again from the new checkout/environment. The shortcut does not bundle Python or copy the source. |
 
 `doctor` performs local checks by default. Its voice check confirms installation,
-not audible playback; use **Hear the booth** to test sound. An optional AI warning
-is normal when using the built-in booth. For help, use **Copy bug report** in the
+not audible playback; use **Hear the booth** to test sound. A missing connection must be resolved before generative commentary works. For help, use **Copy bug report** in the
 window, review what it copied, and include it in a [GitHub issue](https://github.com/josharmour/arenaonair/issues).
 On macOS, desktop-launch output is also saved in `~/.arenaonair/logs/app.log`.
 
@@ -146,7 +146,8 @@ own refresh command and is not required for first use.
 | `~/.venvs/arenaonair` | Python and installed dependencies |
 | `~/.arenaonair/config.toml` | Settings |
 | `~/.arenaonair/` | Match history, recaps, and app logs |
-| `~/.config/arenaonair/llm.key` | Optional AI credential written by setup |
+| `~/.arenaonair/trial.key`, `provider.key` | Private connection credentials written by the dialog; preserve the trial key on updates |
+| `~/.config/arenaonair/llm.key` | Provider credential written by CLI setup |
 | `~/.cache/arenaonair/` | Card and optional knowledge databases |
 | `~/.cache/huggingface/` | Downloaded neural models; may be shared with other apps |
 

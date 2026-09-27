@@ -213,7 +213,7 @@ def test_setup_writes_config_and_private_key(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(doctor, 'resolve_log_path', lambda cfg: tmp_path / 'Player.log')
     monkeypatch.setenv('HOME', str(tmp_path))
     monkeypatch.setenv('USERPROFILE', str(tmp_path))
-    answers = iter(['esports', 'y', 'y', 'https://llm.example/v1', 'some-model', 'y', '8787', '0'])
+    answers = iter(['esports', 'y', 'custom', 'https://llm.example/v1', 'some-model', 'y', '8787', '0'])
     target = tmp_path / 'cfg' / 'config.toml'
     setup_main(['--config', str(target)], input_fn=lambda _: next(answers), getpass_fn=lambda _: 'sekret')
     cfg = load(target)
@@ -459,6 +459,6 @@ def test_setup_preserves_explicit_arena_log(tmp_path, monkeypatch):
     target = tmp_path / 'config.toml'
     target.write_text('log_path = ' + json.dumps(str(path)) + '\n', encoding='utf-8')
     monkeypatch.setattr(doctor, 'run_checks', lambda cfg: [])
-    answers = iter(['classic', 'y', 'n', 'n'])
+    answers = iter(['classic', 'y', 'later', 'n'])
     assert doctor.setup_main(['--config', str(target)], input_fn=lambda _: next(answers)) == 0
     assert load(target).log_path == str(path)

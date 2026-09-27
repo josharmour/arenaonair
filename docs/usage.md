@@ -9,8 +9,10 @@ replace it with `bash ./run.sh` on macOS/Linux, or
 
 Two commentators are the default, even with one Arena log. The play-by-play
 caster calls the action; the analyst adds card explanations and observations.
-The built-in booth uses templates. With a compatible model connected, the
-[AI booth](llm-booth.md) writes original exchanges from observed game facts.
+The [generative booth](llm-booth.md) writes original exchanges from observed game
+facts. Use **Connect / subscription…** for five free hosted matches, a Patreon
+subscription, or your own provider. Hosted generation uses GLM 5.3 and requires
+internet access; only voice synthesis runs on your computer by default.
 
 The Broadcast tab's **Booth** section lets you choose **Two casters** or
 **Play-by-play only**, choose voices, and set the **Focus** to **Mostly calls**,

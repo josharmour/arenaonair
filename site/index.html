@@ -4,9 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ArenaOnAir — Live Esports Radio Commentary for MTG Arena</title>
-  <meta name="description" content="Live commentary for MTG Arena with a desktop window, two local neural voices, and optional AI commentary. Install on Windows, macOS, or Linux.">
+  <meta name="description" content="A generative commentary booth for MTG Arena. Try five matches free with hosted GLM 5.3, subscribe through Patreon, or connect your own model. Local neural voices.">
   <meta property="og:title" content="ArenaOnAir — Live Esports Radio for MTG Arena">
-  <meta property="og:description" content="Your own MTG Arena caster desk. Built-in commentary needs no AI account; connect your own model for original AI exchanges.">
+  <meta property="og:description" content="Two AI casters for your MTG Arena matches. Five hosted matches free, then Patreon or your own provider. GLM 5.3 writes the conversation; voices run locally.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://arenaonair.com">
   <link rel="canonical" href="https://arenaonair.com">
@@ -213,7 +213,7 @@
             </h1>
 
             <p class="text-base sm:text-lg text-slate-600 leading-relaxed max-w-xl font-normal">
-              Give your next match its own caster desk. ArenaOnAir reads your Arena log and calls the action with one or two local neural voices. Choose built-in commentary, or connect your own AI model for original exchanges. Set it all up in a desktop window.
+              Give your next match its own caster desk. Two AI commentators call the action and talk through the game, powered by GLM 5.3 on our server. Try five matches free, then subscribe through Patreon or connect your own model. Their voices run on your computer.
             </p>
 
             <!-- CTA Actions -->
@@ -239,8 +239,8 @@
                 <div class="text-slate-500 uppercase text-[10px] tracking-wider mt-0.5">After model download</div>
               </div>
               <div>
-                <div class="text-2xl font-headline font-black text-slate-900">AI OPTIONAL</div>
-                <div class="text-slate-500 uppercase text-[10px] tracking-wider mt-0.5">Bring your own model</div>
+                <div class="text-2xl font-headline font-black text-slate-900">5 FREE MATCHES</div>
+                <div class="text-slate-500 uppercase text-[10px] tracking-wider mt-0.5">Then Patreon or your model</div>
               </div>
             </div>
 
@@ -499,7 +499,7 @@
                 <span>ZERO MEMORY HOOKS &bull; ZERO PACKET TAMPERING</span>
               </div>
               <p class="font-sans text-slate-500">
-                Reads Arena’s diagnostic log on your computer. Built-in commentary runs locally after setup. Optional AI commentary sends selected game facts to the model provider you configure; coaching is off by default.
+                Reads Arena’s diagnostic log on your computer and sends selected game facts to our server for generative commentary. Your custom provider receives those facts instead if you configure one. Coaching is off by default.
               </p>
             </div>
           </div>
@@ -549,7 +549,7 @@
             </div>
             <h3 class="font-headline font-bold text-xl uppercase text-slate-900">Local neural voices</h3>
             <p class="text-xs text-slate-600 leading-relaxed">
-              Kokoro generates speech on your computer after the initial model downloads. Built-in commentary needs no API account. Optional AI writing uses your own provider and may incur usage charges.
+              Kokoro generates speech on your computer after the initial downloads. GLM 5.3 writes the conversation on our server, so hosted use needs internet access. Fully local use requires your own local language model.
             </p>
           </div>
 
@@ -586,7 +586,7 @@
           </div>
           <div>
             <h3 class="font-bold text-slate-900">4. Set up and launch</h3>
-            <p class="text-sm text-slate-600 mt-2">Run each command below in order. Choose <strong>no</strong> to the AI question for built-in commentary. Setup may flag missing card data; the next command downloads it. Fix any remaining <code>[x ]</code> problems shown by <code>doctor</code>.</p>
+            <p class="text-sm text-slate-600 mt-2">Run each command below in order. Choose <strong>trial</strong> for five free matches, <strong>premium</strong> for your Patreon key, <strong>custom</strong> for your provider, or <strong>later</strong> to connect in the desktop dialog. Setup may flag missing card data; the next command downloads it.</p>
             <div class="mt-3 bg-slate-950 rounded-xl p-4 sm:p-6 font-mono text-xs text-slate-200 border border-slate-800">
               <div class="flex justify-end mb-4"><button id="copy-btn" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700"><span id="copy-label" role="status">COPY COMMANDS</span></button></div>
               <pre id="terminal-code" class="overflow-x-auto leading-relaxed"># In the extracted/cloned ArenaOnAir folder:
@@ -600,9 +600,10 @@ bash ./run.sh --ui</pre>
           </div>
         </div>
         <div class="mt-8 p-5 rounded-xl bg-red-50 border border-red-100 text-sm text-slate-700">
-          <h3 class="font-bold text-slate-900">Want AI commentary?</h3>
-          <p class="mt-2">Connect your own compatible model endpoint and API key. Provider charges may apply, and selected game facts are sent to that endpoint. No hosted account is included. <a class="text-red-700 underline" href="https://github.com/josharmour/arenaonair/blob/main/docs/llm-booth.md#connect-your-model">Set up the AI booth</a>.</p>
+          <h3 class="font-bold text-slate-900">Five matches on us. Keep your booth on air.</h3>
+          <p class="mt-2">Start the free hosted trial from <strong>Connect / subscription…</strong> in the app. No payment details needed. After five matches, <a class="text-red-700 underline font-semibold" href="https://mtgacoach.com/subscribe">subscribe through Patreon and get your key</a>, or enter your own provider’s endpoint, port and model. The dialog can discover local providers and list their models. Remote provider charges may apply. <a class="text-red-700 underline" href="https://github.com/josharmour/arenaonair/blob/main/docs/llm-booth.md#connect-your-model">Connection details and privacy</a>.</p>
         </div>
+        <p class="mt-3 text-xs text-slate-500">A free match counts when its first model response succeeds. Reconnects and best-of-three games share one match. Trial sessions last up to four hours and 1,200 model requests; five matches per device trial. Voice previews do not use a match. Hosted commentary is not 100% local.</p>
         <div class="mt-6 flex flex-wrap gap-5 text-sm font-semibold">
           <a class="text-red-700 underline" href="https://github.com/josharmour/arenaonair#install">Full installation guide</a>
           <a class="text-red-700 underline" href="https://github.com/josharmour/arenaonair/blob/main/docs/install.md#troubleshooting">Troubleshooting &amp; updates</a>

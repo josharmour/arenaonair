@@ -46,7 +46,7 @@ def main():
         # Config is preseeded only with a synthetic log path, preserved by setup.
         # Card-data diagnostics can fail until the database is built below.
         setup = subprocess.run([sys.executable, "-I", "-m", "arenaonair.app", "setup", "--config", str(config)],
-                               cwd=root, env=env, input="classic\ny\nn\nn\n", text=True,
+                               cwd=root, env=env, input="classic\ny\nlater\nn\n", text=True,
                                capture_output=True, timeout=90)
         assert setup.returncode in (0, 1), setup.stderr
         assert "Wrote " in setup.stdout, setup.stdout + setup.stderr
@@ -64,7 +64,7 @@ def main():
         db = root / "cards.sqlite"
         cli("build-carddb", "--from-file", str(cards), "--out", str(db))
         config.write_text(f"carddb_path = {json.dumps(str(db))}\n" + config.read_text(), encoding="utf-8")
-        assert "Ready to broadcast" in cli("doctor", "--config", str(config))
+        assert "Connection required" in cli("doctor", "--config", str(config), expected=1)
         cli("--config", str(config), "--dry-run", "--once", "--no-ui", "--narration-mode", "legacy")
 
         # Run the window from installed resources, with no display or user writes.

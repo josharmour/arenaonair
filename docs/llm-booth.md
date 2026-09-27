@@ -1,64 +1,53 @@
 # Generative booth
 
-ArenaOnAir works with built-in scripted commentary by default. Connecting a
-compatible model enables original AI commentary for both casters, using one
-Arena log. A second compatible source is optional. AI narration is experimental:
-factual checks can reject lines and leave gaps, and can still miss errors.
+The generative booth is ArenaOnAir's default product: original exchanges between
+play-by-play and color commentators, written from observed Arena game facts.
+Our hosted model is **GLM 5.3**, API model ID `glm-5.3-flash`. Generation and factual
+checks can still make mistakes or reject lines, leaving gaps.
 
 ## Connect your model
 
-First complete the [application installation](../README.md#install). You need:
+After [installation](../README.md#install), open **Connect / subscription…**.
 
-- Your provider's API base URL, normally ending in `/v1`.
-- A model name available to your account.
-- Your own API key. ArenaOnAir does not provide a hosted account or shared key.
-- Support for `/chat/completions`, JSON-object responses, and strict JSON-schema
-  responses. A provider calling itself compatible does not guarantee support
-  for the schema used here or sufficiently fast live generation.
+- **Five free matches:** connect to our server without payment details. The app
+  stores a private trial credential; the server stores its hash and a device
+  identifier. A match counts on its first successful model response. Reconnects
+  and games within one best-of-three match use the same match. Voice previews and
+  model discovery do not spend matches. A session is limited to four hours and
+  1,200 requests; five match sessions are offered per device trial.
+- **Premium:** open [mtgacoach.com/subscribe](https://mtgacoach.com/subscribe),
+  subscribe through Patreon, link your Patreon account, and copy the issued key.
+  Paste it in the dialog. Existing patrons use their existing key. The endpoint
+  `https://api.mtgacoach.com/v1` and model `glm-5.3-flash` are preconfigured.
+- **My own provider:** enter the HTTP(S) endpoint, optional port, and model. Use
+  **Find local providers** to check loopback ports 11434, 1234, 8000 and 8080, or
+  **Load models** for your entered endpoint. Select a loaded model. An API key is
+  optional for servers without authentication. Discovery does not install or
+  start a model. The provider needs chat completions, JSON-object output and
+  strict JSON-schema output; a model list alone does not verify those capabilities.
 
-API charges and usage limits belong to your provider. The app sends selected
-observed game facts, card rules, recent spoken context, and allowed hand facts
-to that endpoint. It does not send the raw Arena log. Choose a provider you are
-comfortable sending those facts to; disable hand commentary if desired.
+**Connect and restart** saves the connection and relaunches the booth. The CLI
+`setup` command also offers trial, premium, custom and later choices. Trial keys
+are stored beside the config in `trial.key`; dialog-entered provider keys are in
+`provider.key`. CLI-entered keys use `~/.config/arenaonair/llm.key`. Keys are kept
+out of TOML and created with mode 0600 on macOS/Linux. Never share these files.
+Keep the trial key when updating or reinstalling; a device identifier alone cannot
+recover an existing trial's credential.
 
-Run the setup wizard from the source folder:
+Hosted commentary sends selected game facts, card context, allowed hand facts,
+relevant match-history facts and recent booth dialogue to our server. A custom
+provider receives that context instead. The app does not send the raw Arena log.
+Speech synthesis and saved match history are local after initial downloads.
+A fully local setup requires a local language model as well as local voices.
+Disable hand commentary in Settings when desired.
 
-macOS / Linux:
-
-```sh
-bash ./run.sh setup
-bash ./run.sh doctor --online
-```
-
-Windows PowerShell:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\run.ps1 setup
-powershell -NoProfile -ExecutionPolicy Bypass -File .\run.ps1 doctor --online
-```
-
-Answer **yes** to connecting an AI model, enter your endpoint and model name,
-and enter the API key at the hidden prompt. Setup saves the key separately at
-`~/.config/arenaonair/llm.key` (mode 0600 on macOS/Linux), and writes its path to
-`~/.arenaonair/config.toml`. It selects the GLM request profile for model names
-containing `glm`; otherwise it uses the generic profile. Never copy another
-user's credential or put a key in the repository.
-
-Re-running setup replaces the saved configuration after making a `.toml.bak`
-backup. To preserve customized settings, instead use **Settings → AI model**
-to enter the URL, model, profile, and a path to your existing key file. Choose
-**AI booth when a model is connected** under **Settings → Commentary → Writer**,
-then use **Restart now**. On macOS/Linux restrict a manually created key file
-with `chmod 600 /path/to/llm.key`.
-
-`doctor --online` makes a small JSON request and may incur an API charge. Passing
-it proves basic connectivity; it does not certify schema compatibility or live
-commentary quality. Start a match and check the model status in the window.
-
-To return to built-in commentary, select **Scripted booth** under **Settings →
-Commentary → Writer**, restart, or launch with `--narration-mode legacy`. A
-configured model that fails stays silent and shows an error; it does not silently
-switch writers.
+Custom provider charges and limits belong to that provider. `doctor --online`
+checks model connectivity; on a trial it checks access and remaining matches
+without generating commentary or spending a match. It does not certify commentary
+quality. If a connection fails or the trial ends, the booth stays silent and
+shows the error. Use the connection dialog to subscribe or choose another provider.
+The scripted writer remains an explicit replay/diagnostics option
+(`--narration-mode legacy`), not an automatic fallback.
 
 ## Manual configuration
 

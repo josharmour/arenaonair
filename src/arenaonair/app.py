@@ -189,7 +189,7 @@ class ArenaOnAirApp:
         self.hole_cards = config_mod.hole_cards_enabled(self.config)
         self.warnings: list[str] = []
         self.queue = SpeechQueue()
-        self.narration_mode = ("llm" if self.config.llm_base_url else "legacy") if self.config.narration_mode == "auto" else self.config.narration_mode
+        self.narration_mode = ("legacy" if self.dry_run and not self.config.llm_base_url else "llm") if self.config.narration_mode == "auto" else self.config.narration_mode
         self.llm = (GenerativeBooth(self.config, self.queue, booth, carddb=self.carddb, knowledge=CardKnowledge())
                     if self.narration_mode == "llm" else None)
 
@@ -210,9 +210,9 @@ class ArenaOnAirApp:
             if self.recorder is not None:
                 self.llm.history_facts = self.recorder.history_facts
         self.overlay = None
-        if self.llm is None and self.config.narration_mode == "auto":
-            self._warn("No AI model is connected, so commentary is the scripted booth. "
-                       "Run './run.sh setup' (or 'arenaonair setup') to connect one.")
+        if self.llm is not None and not self.config.llm_base_url:
+            self._warn("Connect the generative booth: try five hosted matches, use a Patreon key, "
+                       "or connect your own provider.")
 
         self.speaker = None          # built in start()
         self.config_path = None      # set by main(); where the window saves settings
@@ -640,6 +640,8 @@ class ArenaOnAirApp:
         prev_snap = None
         backlog: list = []
         idle_polls = 0
+        from .connection import TRIAL_URL
+        trial_first_batch = self.config.llm_base_url.rstrip('/') == TRIAL_URL
 
         interval = max(0.005, float(self.config.poll_interval))
 
@@ -674,6 +676,9 @@ class ArenaOnAirApp:
                 continue
 
             idle_polls = 0
+            # Prime state from the existing log without spending a trial match on
+            # old traffic. Only subsequent appended activity can request a line.
+            self._trial_priming = trial_first_batch or (self.once_mode and self.config.llm_base_url.rstrip('/') == TRIAL_URL)
             for item in lines:
               try:
                 if self.fusion is None:
@@ -691,6 +696,9 @@ class ArenaOnAirApp:
               except Exception:
                 logger.exception("watcher line feed raised (raw input omitted)")
                 raise
+
+            trial_first_batch = False
+            self._trial_priming = False
 
             # In --once mode, pace batch reading to allow the test/smoke speaker
             # to voice each batch in order. In live mode, NEVER block here so
@@ -886,6 +894,8 @@ class ArenaOnAirApp:
 
     def _handle_event(self, event, snap, previous_match_id=None, tempo="normal") -> None:
         """Gate -> render -> enqueue one event (with end-of-game sealing)."""
+        if getattr(self, '_trial_priming', False):
+            return
         if self.llm and event.kind == ev.TURN_START:
             self.llm.turn_started(snap)  # a game-read moment, whatever the verbosity
         if not passes_gate(event, self.config.verbosity):
@@ -1018,6 +1028,7 @@ class ArenaOnAirApp:
             "sources": dict(self._source_health),
             "enriched": bool(self.fusion and self.fusion.last_publish_was_enriched),
             "narration_mode": self.narration_mode,
+            "trial": getattr(self.llm.client, "trial_status", None) if self.llm else None,
             "model": self.llm.status() if self.llm else {"state": "legacy"},
             "persona": self.persona.name if self.persona else None,
             "focus": self.config.commentary_focus,

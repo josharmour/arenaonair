@@ -84,6 +84,9 @@ class BroadcastWindow(QWidget):
         self.extras_label.setWordWrap(True)
         self.extras_label.setTextInteractionFlags(self.extras_label.textInteractionFlags() | Qt.TextSelectableByMouse)
         layout.addWidget(self.extras_label)
+        self.connection_button = QPushButton("Connect / subscription…")
+        self.connection_button.clicked.connect(self.connect_booth)
+        layout.addWidget(self.connection_button)
         layout.addWidget(self._voice_picker())
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
@@ -107,6 +110,15 @@ class BroadcastWindow(QWidget):
         self.timer.timeout.connect(self.refresh)
         self.timer.start(300)
         self.refresh()
+        if hasattr(app, 'config') and not app.config.llm_base_url and not getattr(app, 'dry_run', False):
+            QTimer.singleShot(0, self.connect_booth)
+
+    def connect_booth(self):
+        from .connection_dialog import ConnectionDialog
+        from .config import DEFAULT_CONFIG_PATH
+        dialog = ConnectionDialog(self.app.config, self.app.config_path or DEFAULT_CONFIG_PATH, self)
+        if dialog.exec():
+            self.request_restart()
 
     # -- booth: casters, focus, coaching, voices -------------------------------
 
@@ -443,7 +455,10 @@ class BroadcastWindow(QWidget):
         warnings = status.get('warnings') or []
         self.warning_label.setText('\n'.join(warnings))
         self.warning_label.setVisible(bool(warnings))
-        extras = []
+        from .connection import connection_label
+        extras = [connection_label(getattr(getattr(self.app, 'config', None), 'llm_base_url', ''))]
+        if status.get('trial'):
+            extras.append(f"{status['trial']['matches_remaining']} free matches remaining")
         if status.get('overlay'):
             extras.append(f"OBS overlay: {status['overlay']}")
         extras.append('Hole cards: on air' if status.get('hole_cards') else 'Hole cards: off air')

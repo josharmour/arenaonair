@@ -102,7 +102,7 @@ MIN_HOLE_CARD_STREAM_DELAY_S = 30.0
 class Config:
     """Runtime knobs for one ArenaOnAir app instance."""
 
-    narration_mode: str = "auto"       # auto selects llm when base_url is configured
+    narration_mode: str = "auto"       # generative by default; dry-run may use scripted replay
     llm_base_url: str = ""
     llm_model: str = "glm-5.3-flash"
     llm_key_file: str = ""

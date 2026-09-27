@@ -1,12 +1,14 @@
 # ArenaOnAir
 
-Radio-style commentary for your MTG Arena matches. ArenaOnAir reads Arena's
-`Player.log` and speaks the action with one or two commentators. A desktop window
-lets you change voices, commentary style, and streaming settings.
+A generative commentary booth for MTG Arena. Two AI casters follow your match,
+call plays, and discuss the game using GLM 5.3 on our server. Their voices are
+synthesized on your computer. Coaching is off by default.
 
-**Works without an AI account:** built-in scripted commentary and local neural
-voices are included in the recommended install. Optional AI commentary uses a
-compatible model provider and your own API credentials. Coaching is off by default.
+**Try five matches free**, then subscribe through
+[Patreon via MTGA Coach](https://mtgacoach.com/subscribe) using the same customer key.
+You can also connect your own local or remote provider in the app.
+Hosted commentary requires internet access and sends selected game facts to our
+server. This is **not a 100% local app** unless you configure a local language model.
 
 **Early release:** installation currently uses a source checkout and a terminal.
 The steps below install the desktop window and voices, then create a clickable
@@ -15,7 +17,7 @@ launcher. Keep the checkout and its Python environment in place afterward.
 ## Install
 
 You need MTG Arena installed and launched at least once, an internet connection for
-installation and the initial voice/card downloads, and several GB of free disk space.
+installation, voice/card downloads, and hosted commentary, plus several GB of free disk space.
 The launchers use [uv](https://docs.astral.sh/uv/getting-started/installation/) to
 install Python 3.12 and dependencies automatically. Manual installs require Python
 3.11 or newer; Python 3.12 is recommended for the voice dependencies.
@@ -98,12 +100,12 @@ your saved execution policy. Run each command in order. The first installs the a
 window, and neural voices under `~/.venvs/arenaonair` (`%USERPROFILE%\.venvs\arenaonair`
 on Windows). Initial installation can take several minutes.
 
-During setup, choose a persona and one or two commentators. Choose **no** when
-asked about an AI model to start with built-in commentary; you can connect a model
-later in Settings. OBS setup is also optional. Setup ends with diagnostics and
-may report missing card data; the next command downloads it from Scryfall
+During setup, choose a persona and one or two commentators. Select **trial** for
+five hosted matches, **premium** to enter your Patreon key, **custom** for your own
+provider, or **later** to use the desktop connection dialog. OBS setup is optional.
+Setup may flag missing card data; the next command downloads it from Scryfall
 (several hundred MB). Re-run `doctor` and fix any `[x ]` problems before playing.
-The optional AI warning is expected when you use built-in commentary.
+If you chose **later**, connect in the app before expecting commentary.
 
 ### 4. Hear your first match
 
@@ -125,18 +127,28 @@ If you move the source folder or environment, run `install-app` again from the n
 location. See [installation, updates, and troubleshooting](docs/install.md) for
 manual Python setup, log locations, audio problems, and uninstalling.
 
-## Optional AI commentary
+## Connect the generative booth
 
-The built-in booth is ready without an API key. For original AI commentary, you
-need your own endpoint, model name, and API key from a compatible provider. API
-usage may cost money, depending on that provider. There is no bundled hosted
-account or shared credential.
+Click **Connect / subscription…** in the app:
 
-Follow [AI booth setup](docs/llm-booth.md#connect-your-model). The model must support
-chat completions with structured JSON-schema output; compatibility and live
-latency vary. If a configured model fails, its commentary stays silent and the
-window shows the error. Select **Scripted booth** under Settings → Commentary → Writer to return to scripted
-commentary.
+| Connection | What you need |
+| --- | --- |
+| **Five free matches** | Internet access; no payment details. Hosted GLM 5.3 is preconfigured. |
+| **Premium** | Subscribe at [mtgacoach.com/subscribe](https://mtgacoach.com/subscribe), link Patreon, and paste the issued key. Existing patrons can use their current key. |
+| **My own provider** | Enter an endpoint and optional port, load/select a model, and enter a key only if required. **Find local providers** checks common ports on your computer. |
+
+Click **Connect and restart** to apply the connection. The trial counter lives on
+the server: a match counts on its first successful model response. App restarts,
+voice previews, and reconnects to the same match do not count again; best-of-three
+games share one match. Each trial match session allows up to four hours and 1,200
+model requests. Five matches are offered per device trial; reinstalling does not
+reset the server counter. Keep `~/.arenaonair/trial.key` to reconnect to your trial.
+
+Custom providers must support chat completions and structured JSON-schema output;
+quality and latency depend on the model. Local-only generation requires a running
+local model and the hardware to serve it. Remote providers may charge for usage.
+If the connection fails, the booth shows an error and waits to reconnect.
+See [connection setup and privacy](docs/llm-booth.md#connect-your-model).
 
 ## Using the app
 
