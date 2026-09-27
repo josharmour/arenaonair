@@ -30,11 +30,12 @@ def _pool_fragments(kind: str) -> list[str]:
     union of pool fragments instead of one hardcoded sentence.
     """
     from arenaonair.templates import TEMPLATE_POOLS
+    from string import Formatter
     frags: list[str] = []
     for tpl in TEMPLATE_POOLS.get(kind, []):
         # Strip slot placeholders; keep the longest literal run as the marker.
-        literals = [p.strip() for p in tpl.split("{")]
-        head = next((p.rstrip(" ,.:;-") for p in literals if len(p) >= 12), "")
+        literals = [literal.strip(" ,.!?:;-") for literal, *_ in Formatter().parse(tpl)]
+        head = max(literals, key=len, default="")
         if head:
             frags.append(head)
     return frags or [kind]
@@ -395,3 +396,9 @@ def test_the_scripted_booth_calls_an_unsayable_opponent_the_opponent(tmp_path):
     code, out = _run_once(_write_player_log(records, tmp_path / "Player.log"), verbosity="detailed")
     assert code == 0
     assert "Creole1337" not in out and "the opponent" in out.lower()
+
+
+def test_closing_template_markers_include_short_literals_and_exclude_slots():
+    markers = _pool_fragments('game_end')
+    assert 'Game over' in markers
+    assert all('{' not in marker and '}' not in marker for marker in markers)
