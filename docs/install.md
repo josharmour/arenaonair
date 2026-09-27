@@ -146,8 +146,8 @@ own refresh command and is not required for first use.
 | `~/.venvs/arenaonair` | Python and installed dependencies |
 | `~/.arenaonair/config.toml` | Settings |
 | `~/.arenaonair/` | Match history, recaps, and app logs |
-| `~/.arenaonair/trial.key`, `provider.key` | Private connection credentials written by the dialog; preserve the trial key on updates |
-| `~/.config/arenaonair/llm.key` | Provider credential written by CLI setup |
+| `~/.arenaonair/trial.key`, `provider-*.key` | Private connection credentials written by the dialog; preserve the trial key on updates |
+| `~/.config/arenaonair/provider-*.key` | Provider credential written by CLI setup |
 | `~/.cache/arenaonair/` | Card and optional knowledge databases |
 | `~/.cache/huggingface/` | Downloaded neural models; may be shared with other apps |
 

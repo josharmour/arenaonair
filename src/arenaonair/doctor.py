@@ -282,7 +282,7 @@ def setup_main(argv=None, *, input_fn=input, getpass_fn=None) -> int:
             "Model name (as your provider lists it)", required=True, input_fn=input_fn)
         answers["profile"] = "glm" if "glm" in answers["model"].lower() else "generic"
         key = getpass_fn("API key (hidden; blank only for a provider without authentication): ").strip()
-        key_file = Path.home() / ".config" / "arenaonair" / "llm.key"
+        key_file = connection.provider_key_path(Path.home() / ".config" / "arenaonair", answers['base_url'])
         answers["key_file"] = str(connection.write_key(key_file, key)) if key else ""
         if choice == "premium":
             try:

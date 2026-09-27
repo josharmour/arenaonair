@@ -29,7 +29,7 @@ After [installation](../README.md#install), open **Connect / subscription…**.
 **Connect and restart** saves the connection and relaunches the booth. The CLI
 `setup` command also offers trial, premium, custom and later choices. Trial keys
 are stored beside the config in `trial.key`; dialog-entered provider keys are in
-`provider.key`. CLI-entered keys use `~/.config/arenaonair/llm.key`. Keys are kept
+`provider-*.key`. CLI-entered keys use `~/.config/arenaonair/provider-*.key`. Keys are kept
 out of TOML and created with mode 0600 on macOS/Linux. Never share these files.
 Keep the trial key when updating or reinstalling; a device identifier alone cannot
 recover an existing trial's credential.

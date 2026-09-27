@@ -189,7 +189,8 @@ class ConnectionDialog(QDialog):
 
     def _save_provider(self, result):
         values, key = result
-        values['key_file'] = str(api.write_key(self.config_path.parent / "provider.key", key)) if key else ""
+        path = api.provider_key_path(self.config_path.parent, values['base_url'])
+        values['key_file'] = str(api.write_key(path, key)) if key else ""
         api.save_connection(self.config_path, values)
         self.accept()
 

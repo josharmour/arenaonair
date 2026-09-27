@@ -106,6 +106,13 @@ def write_key(path, key):
     return path
 
 
+def provider_key_path(directory, base):
+    # A failed config save must not replace the credential still used by a
+    # different endpoint. Keep each provider's key in a distinct file.
+    suffix = hashlib.sha256(base.encode()).hexdigest()[:16]
+    return Path(directory) / f"provider-{suffix}.key"
+
+
 def start_trial(config_path):
     # Save the possession secret before contacting the server, so retries/restarts
     # cannot strand a provisioned trial. A device ID alone cannot retrieve it.

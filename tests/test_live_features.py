@@ -220,7 +220,8 @@ def test_setup_writes_config_and_private_key(tmp_path, monkeypatch, capsys):
     assert (cfg.persona, cfg.broadcast_mode, cfg.llm_base_url, cfg.overlay_port) == (
         'esports', 'dual', 'https://llm.example/v1', 8787)
     assert 'sekret' not in target.read_text()
-    key = tmp_path / '.config' / 'arenaonair' / 'llm.key'
+    from arenaonair.connection import provider_key_path
+    key = provider_key_path(tmp_path / '.config' / 'arenaonair', 'https://llm.example/v1')
     assert key.read_text().strip() == 'sekret'
     if os.name != 'nt':
         assert stat.S_IMODE(key.stat().st_mode) == 0o600

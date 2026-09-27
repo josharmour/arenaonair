@@ -128,3 +128,12 @@ def test_trial_startup_log_is_primed_before_generating(tmp_path, monkeypatch):
         assert seen == [('existing log', True), ('new activity', False)]
     finally:
         app.stop()
+
+
+def test_provider_keys_cannot_overwrite_another_endpoints_credential(tmp_path):
+    first = connection.provider_key_path(tmp_path, 'https://first.example/v1')
+    second = connection.provider_key_path(tmp_path, 'https://second.example/v1')
+    connection.write_key(first, 'first-secret')
+    connection.write_key(second, 'second-secret')
+    assert first != second
+    assert first.read_text().strip() == 'first-secret'
