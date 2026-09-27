@@ -113,6 +113,8 @@ def test_failed_refresh_preserves_cache_and_success_reopens(exported):
         p = json.loads(conn.execute("SELECT payload FROM cards WHERE oracle_id='opt'").fetchone()[0])
         p['commander_context']['edhrec_rank'] = 42
         conn.execute("UPDATE cards SET payload=? WHERE oracle_id='opt'", (json.dumps(p),))
+    # A SQLite context commits the transaction but does not close the handle.
+    conn.close()
     replacement.replace(path)
     assert cache.lookup('Opt')[0]['commander_context']['edhrec_rank'] == 42
     cache.close()

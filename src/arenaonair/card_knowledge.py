@@ -106,5 +106,9 @@ class CardKnowledge:
                             scope='Commander combo catalog; theoretical recipe, NOT evidence of a combo available or happening in this match.'))
                 return facts
             except (OSError, sqlite3.Error, ValueError, KeyError, TypeError, AttributeError):
-                self.close()
                 return []
+            finally:
+                # Windows cannot replace a database while a reader holds it
+                # open. Keep the file handle scoped to this lookup so a cache
+                # refresh can replace the snapshot while the booth is idle.
+                self.close()
