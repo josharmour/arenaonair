@@ -186,6 +186,45 @@ class TestS71KokoroCancelScoping:
         # Remaining chunks of the canceled utterance were suppressed.
         assert stub.calls == []
 
+    def test_cancel_during_only_chunk_counts_as_heard(self, monkeypatch):
+        # A booth line is one Kokoro chunk and players can't stop a chunk
+        # mid-way: a cancel landing during it leaves the line heard in full.
+        eng, stub = self._make(monkeypatch, n_chunks=1, hold=0.3)
+        box: dict = {}
+        t = threading.Thread(target=lambda: box.update(res=eng.speak(mk("whole-line"))))
+        t.start()
+        assert stub.started.wait(timeout=2), "playback never started"
+        eng.cancel()
+        t.join(timeout=5)
+        assert box["res"].ok is True
+        assert len(stub.calls) == 1
+
+    def test_cancel_during_last_chunk_counts_as_heard(self, monkeypatch):
+        eng, stub = self._make(monkeypatch, n_chunks=3)
+
+        def cancel_during_last(pcm, sr, generation=0):
+            stub(pcm, sr, generation)
+            if len(stub.calls) == 3:
+                eng.cancel()
+
+        monkeypatch.setattr(eng, "_play_chunk", cancel_during_last)
+        assert eng.speak("three chunks").ok is True
+        assert len(stub.calls) == 3
+
+    def test_cancel_before_first_chunk_plays_nothing(self, monkeypatch):
+        eng, stub = self._make(monkeypatch)
+        real_synth = eng._synthesize_pcm
+
+        def cancel_while_synthesizing(*args, **kwargs):
+            for chunk in real_synth(*args, **kwargs):
+                eng.cancel()
+                yield chunk
+
+        monkeypatch.setattr(eng, "_synthesize_pcm", cancel_while_synthesizing)
+        res = eng.speak("never started")
+        assert res.ok is False and "cancel" in res.reason.lower()
+        assert stub.calls == []
+
     def test_repeated_cancels_ok(self, monkeypatch):
         eng, stub = self._make(monkeypatch)
         for _ in range(3):

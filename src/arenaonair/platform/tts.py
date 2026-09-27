@@ -300,9 +300,9 @@ class KokoroEngine(TTSEngine):
             use_voice = cached_tensor
         else:
             use_voice = active_voice
+        # Cancellation is decided by synthesize(), which must know whether a
+        # chunk was kept from playing; ending this generator early would hide that.
         for chunk in pipe(text, voice=use_voice, speed=effective_speed):
-            if self._is_cancelled(generation):
-                return
             audio = getattr(chunk, "audio", None)
             if audio is None:
                 continue
@@ -311,9 +311,7 @@ class KokoroEngine(TTSEngine):
     # -- playback per OS ----------------------------------------------------
 
     def _play_chunk(self, pcm, sr: int, generation: int = 0) -> None:
-        """Blocking playback of one PCM chunk; honors scoped cancel flag."""
-        if self._is_cancelled(generation):
-            return
+        """Blocking playback of one PCM chunk; once started it plays to the end."""
         if sys.platform == "win32":
             self._play_sounddevice(pcm, sr)
         elif sys.platform == "darwin":
@@ -413,15 +411,21 @@ class KokoroEngine(TTSEngine):
         Cancellation is scoped to THIS utterance via its generation token and
         reported as an interruption (distinct from an engine fault) so the
         runtime fallback chain never replays an intentionally canceled line.
+
+        No player can stop a chunk it has started (afplay/aplay/sounddevice
+        all block to the end), so a cancel only counts once it keeps a chunk
+        from playing. A cancel during the last chunk leaves the line heard in
+        full: reporting it interrupted made the booth drop the exchange queued
+        behind it and repeat a point the audience had already heard.
         """
         generation = self._begin_utterance()
         chunks_played = 0
         for pcm, sr in self._synthesize_pcm(
                 text, rate=rate, voice=voice, generation=generation):
+            if self._is_cancelled(generation):
+                raise InterruptedError("kokoro: synthesis cancelled mid-utterance")
             self._play_chunk(pcm, sr, generation=generation)
             chunks_played += 1
-        if self._is_cancelled(generation):
-            raise InterruptedError("kokoro: synthesis cancelled mid-utterance")
         if chunks_played == 0:
             raise RuntimeError("kokoro produced no audio")
 
