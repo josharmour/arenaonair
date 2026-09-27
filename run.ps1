@@ -3,7 +3,9 @@ $ErrorActionPreference = 'Stop'
 $RepoDir = $PSScriptRoot
 $VenvDir = if ($env:ARENAONAIR_VENV) { $env:ARENAONAIR_VENV } else { Join-Path $HOME '.venvs\arenaonair' }
 $VenvPython = Join-Path $VenvDir 'Scripts\python.exe'
-$Probe = 'import importlib.util, sys; sys.exit(0 if sys.version_info >= (3, 11) and all(importlib.util.find_spec(m) for m in ("websockets", "kokoro", "numpy", "sounddevice", "PySide6", "pip")) else 1)'
+# Windows PowerShell's native argument handling strips embedded double quotes.
+# Keep the Python string literals single-quoted so the probe survives it.
+$Probe = "import importlib.util, sys; sys.exit(0 if sys.version_info >= (3, 11) and all(importlib.util.find_spec(m) for m in ('websockets', 'kokoro', 'numpy', 'sounddevice', 'PySide6', 'pip')) else 1)"
 
 $Ready = $false
 if (Test-Path -LiteralPath $VenvPython) {

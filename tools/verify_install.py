@@ -19,8 +19,9 @@ def main():
                     if sys.platform == "win32" else ["bash", str(repo / "run.sh")])
         # Work outside the checkout, including a space in the environment path.
         subprocess.run([*launcher, "--help"], cwd=root, env=env, check=True)
-        repeat = subprocess.run([*launcher, "--help"], cwd=root, env=env, check=True,
+        repeat = subprocess.run([*launcher, "--help"], cwd=root, env=env,
                                 capture_output=True, text=True)
+        assert repeat.returncode == 0, repeat.stdout + repeat.stderr
         assert "Installing ArenaOnAir" not in repeat.stdout, repeat.stdout
         python = root / "venv" / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
         out = root / "dist"
