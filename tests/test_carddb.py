@@ -206,3 +206,68 @@ class TestFixtureResolution:
             if info is not None:
                 assert isinstance(info.name, str) and info.name
                 assert isinstance(info.type_line, str)
+
+
+@pytest.fixture()
+def arena_db(tmp_path):
+    path = tmp_path / 'Raw_CardDatabase_fixture.mtga'
+    conn = sqlite3.connect(path)
+    conn.executescript('''
+        CREATE TABLE Cards (GrpId INT, TitleId INT, TypeTextId INT, SubtypeTextId INT, OldSchoolManaText TEXT);
+        CREATE TABLE Localizations_enUS (LocId INT, Formatted INT, Loc TEXT);
+        INSERT INTO Cards VALUES (93987, 21339, 16, 0, 'o1oBoB');
+        INSERT INTO Localizations_enUS VALUES (21339, 0, 'Grim Tutor');
+        INSERT INTO Localizations_enUS VALUES (16, 0, 'Sorcery');
+    ''')
+    conn.commit()
+    conn.close()
+    return path
+
+
+def test_missing_printing_uses_read_only_arena_database(synth_db, arena_db):
+    db = CardDb(synth_db, arena_db_path=arena_db)
+    try:
+        assert db.lookup(93987) == CardInfo('Grim Tutor', 'Sorcery', '{1}{B}{B}', ('Sorcery',))
+        assert db.as_resolver()(93987) == 'Grim Tutor'
+        assert db.lookup(75553).name == 'Lightning Bolt'  # cache hit retained
+        assert db.lookup(123456789) is None
+        with pytest.raises(sqlite3.OperationalError):
+            db._arena_conn.execute('DELETE FROM Cards')
+    finally:
+        db.close()
+    assert db._arena_conn is None
+
+
+def test_arena_lookup_works_without_external_cache(tmp_path, arena_db):
+    db = CardDb(tmp_path / 'absent.sqlite', arena_db_path=arena_db)
+    assert db.lookup(93987).name == 'Grim Tutor'
+    db.close()
+
+
+def test_incompatible_arena_database_keeps_normal_cache(synth_db, tmp_path):
+    wrong = tmp_path / 'broken.mtga'
+    wrong.write_text('not sqlite')
+    db = CardDb(synth_db, arena_db_path=wrong)
+    assert db.lookup(75553).name == 'Lightning Bolt'
+    assert db.lookup(93987) is None
+    db.close()
+
+
+def test_rules_cache_build_from_local_bulk_preserves_order_and_unknown_rules(tmp_path, monkeypatch):
+    from tools import build_carddb
+    source = tmp_path / 'cards.json'
+    source.write_text(json.dumps([
+        {'arena_id': 1, 'name': 'Grim Tutor', 'type_line': 'Sorcery', 'mana_cost': '{1}{B}{B}',
+         'oracle_text': 'Search your library for a card, put that card into your hand, then shuffle. You lose 3 life.'},
+        {'arena_id': 2, 'name': 'Unknown rules', 'type_line': 'Creature'},
+    ]))
+    monkeypatch.setattr(build_carddb, 'fetch_bulk_index', lambda: pytest.fail('must use local source'))
+    target = tmp_path / 'cards.sqlite'
+    assert build_carddb.build(target, source) == 2
+    db = CardDb(target)
+    try:
+        assert db.lookup(1).oracle_text.endswith('You lose 3 life.')
+        assert 'then shuffle' in db.lookup(1).oracle_text
+        assert db.lookup(2).oracle_text == ''
+    finally:
+        db.close()

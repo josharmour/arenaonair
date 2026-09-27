@@ -222,7 +222,7 @@ def test_differ_detect_tutor_anticipation():
     assert events[0].kind == ev.TUTOR_ANTICIPATION
     assert events[0].payload["card_name"] == "Demonic Tutor"
     assert events[0].payload["target_name"] == "Sunfall"
-    assert events[0].payload["target_count"] == 2
+    assert events[0].payload["target_count"] is None
 
 
 def test_differ_detect_graveyard_recursion():
@@ -303,9 +303,11 @@ def test_story_outs_anticipation():
         snapshot_id=1,
         prev_snapshot_id=None,
         zones={
+            "library:1": ZoneView(2, "library", 1, (9010, 9011, 9012)),
             "battlefield:pub": ZoneView(zone_id=1, zone_type="battlefield", owner_seat=None, object_ids=(1,)),
         },
         objects={
+            **{iid: CardRef(iid, 901, "Sunfall", "Sorcery", ("sorcery",), owner_seat=1) for iid in (9010, 9011, 9012)},
             1: CardRef(instance_id=1, grp_id=5, name="Gargantuan Beast", type_line="Creature", card_types=("creature",), power=10, toughness=10, controller_seat=2),
         },
         players={1: PlayerView(seat=1, life=4), 2: PlayerView(seat=2, life=20)},

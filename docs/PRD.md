@@ -24,13 +24,13 @@ life totals are shifting — in plain language a layman can follow. Like good to
 it follows the *story* of the game as much as the plays themselves — momentum swings,
 resource patterns, standoffs turning into races, comebacks taking shape — so long stretches of
 a match feel narrated rather than counted off play by play.
-It never says what to play.
+By default it never says what to play; the listener can turn on coaching (below).
 
 ## 3. Non-goals (explicit)
 
 | Not in v1 | Why |
 |---|---|
-| Advice, recommendations, "you should attack" | Core identity: announcer, not coach. Hard product rule. |
+| Advice by default | Announcer first. Since 2026-09-23 the listener can turn on `coaching` (window or `--coaching`): the AI booth may then suggest plays for them, using only what they can see. Off by default. |
 | Autopilot / action submission | Removes the entire BepInEx plugin + GRE bridge dependency; logs alone are sufficient ground truth for narration. |
 | Win-probability estimates | Requires MageZero inference; adds backend fragility for marginal listener value. Revisit post-v1. |
 | Draft support | Different event stream; separate product later if ever. |

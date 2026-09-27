@@ -4,9 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ArenaOnAir — Live Esports Radio Commentary for MTG Arena</title>
-  <meta name="description" content="Turn silent Magic Arena matches into an electrifying live sports broadcast. Sub-millisecond log tailing, dynamic tempo adaptation, and local neural voice synthesis.">
+  <meta name="description" content="Live commentary for MTG Arena with a desktop window, two local neural voices, and optional AI commentary. Install on Windows, macOS, or Linux.">
   <meta property="og:title" content="ArenaOnAir — Live Esports Radio for MTG Arena">
-  <meta property="og:description" content="Bring the championship caster booth to your desktop. Zero cloud lag, offline neural voice commentary.">
+  <meta property="og:description" content="Your own MTG Arena caster desk. Built-in commentary needs no AI account; connect your own model for original AI exchanges.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://arenaonair.com">
   <link rel="canonical" href="https://arenaonair.com">
@@ -116,6 +116,11 @@
     .vector-blend {
       mix-blend-mode: multiply;
     }
+    :focus-visible { outline: 3px solid #0284c7; outline-offset: 4px; }
+    section[id] { scroll-margin-top: 6rem; }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+    }
   </style>
 </head>
 <body class="min-h-screen flex flex-col font-sans selection:bg-red-600 selection:text-white bg-white">
@@ -126,15 +131,15 @@
       <div class="flex items-center space-x-4">
         <span class="inline-flex items-center gap-1.5 text-emerald-700 font-bold">
           <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-          FREQUENCY 94.7 FM
+          MTG ARENA COMMENTARY
         </span>
         <span class="hidden sm:inline text-slate-300">|</span>
-        <span class="hidden sm:inline">CALLSIGN: <strong class="text-slate-900">W-AOA ARENA RADIO</strong></span>
+        <span class="hidden sm:inline">RELEASE: <strong class="text-slate-900">EARLY ACCESS</strong></span>
         <span class="hidden md:inline text-slate-300">|</span>
-        <span class="hidden md:inline">MTGA LOG ENGINE: <strong class="text-emerald-700">ONLINE (200Hz)</strong></span>
+        <span class="hidden md:inline">VOICES: <strong class="text-emerald-700">ON YOUR COMPUTER</strong></span>
       </div>
       <div class="flex items-center space-x-4">
-        <span class="hidden sm:inline">QUEUE DELAY: <strong class="text-slate-900">0.00 MS</strong></span>
+        <span class="hidden sm:inline">WINDOWS / MAC / LINUX</span>
         <span class="hidden sm:inline text-slate-300">|</span>
         <a href="https://github.com/josharmour/arenaonair" target="_blank" rel="noopener noreferrer" class="text-slate-700 hover:text-slate-900 transition flex items-center gap-1.5 font-bold">
           <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
@@ -167,19 +172,19 @@
       <div class="flex items-center space-x-6 sm:space-x-8">
         
         <!-- Interactive "ON AIR" Tally Sign -->
-        <div id="header-onair" class="on-air-lamp px-3.5 py-1 rounded-md cursor-pointer select-none flex items-center space-x-2" title="Click to test ON AIR lamp">
+        <button type="button" id="header-onair" aria-label="Test the on-air lamp" class="on-air-lamp px-3.5 py-1 rounded-md cursor-pointer select-none flex items-center space-x-2" title="Click to test ON AIR lamp">
           <span class="w-2.5 h-2.5 rounded-full bg-slate-400"></span>
           <span class="lamp-text font-headline font-black text-lg tracking-wider uppercase leading-none">ON AIR</span>
-        </div>
+        </button>
 
         <nav class="hidden md:flex items-center space-x-6 text-xs font-mono font-bold uppercase tracking-wider text-slate-600">
           <a href="#console" class="hover:text-red-600 transition">Caster Desk</a>
-          <a href="#cyber-athletics" class="hover:text-red-600 transition">Cyber Athletics</a>
+          <a href="#cyber-athletics" class="hover:text-red-600 transition">Features</a>
           <a href="#quickstart" class="hover:text-red-600 transition">Setup</a>
         </nav>
 
         <a href="#quickstart" class="hidden sm:inline-flex items-center gap-2 px-4 py-2 rounded-md bg-slate-900 hover:bg-slate-800 text-white font-mono text-xs font-bold transition uppercase tracking-wider shadow-sm">
-          <span>Run Local</span>
+          <span>Install</span>
           <span class="text-red-400">&rarr;</span>
         </a>
       </div>
@@ -208,17 +213,17 @@
             </h1>
 
             <p class="text-base sm:text-lg text-slate-600 leading-relaxed max-w-xl font-normal">
-              Turn quiet, solitary ladder games into a championship sports telecast. ArenaOnAir tails your MTG Arena game log directly off disk at 200Hz, dynamically regulates commentary cadence during fast attacks, and narrates matches live with offline neural voice synthesis.
+              Give your next match its own caster desk. ArenaOnAir reads your Arena log and calls the action with one or two local neural voices. Choose built-in commentary, or connect your own AI model for original exchanges. Set it all up in a desktop window.
             </p>
 
             <!-- CTA Actions -->
             <div class="flex flex-wrap items-center gap-4 pt-2 font-mono text-xs font-bold uppercase tracking-wider">
-              <a href="#console" class="px-6 py-3.5 rounded-md bg-red-600 hover:bg-red-700 text-white shadow-md shadow-red-600/20 transition flex items-center gap-2">
+              <a href="#quickstart" class="px-6 py-3.5 rounded-md bg-red-600 hover:bg-red-700 text-white shadow-md shadow-red-600/20 transition flex items-center gap-2">
                 <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-                <span>Try Caster Soundboard</span>
+                <span>Install ArenaOnAir</span>
               </a>
-              <a href="#quickstart" class="px-6 py-3.5 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-800 transition flex items-center gap-2">
-                <span>View Quickstart</span>
+              <a href="#console" class="px-6 py-3.5 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-800 transition flex items-center gap-2">
+                <span>Try browser demo</span>
                 <span class="text-slate-500">&rarr;</span>
               </a>
             </div>
@@ -226,16 +231,16 @@
             <!-- Sports Spec Badges -->
             <div class="pt-6 border-t border-slate-100 grid grid-cols-3 gap-6 font-mono text-xs">
               <div>
-                <div class="text-2xl font-headline font-black text-slate-900">0.00ms</div>
-                <div class="text-slate-500 uppercase text-[10px] tracking-wider mt-0.5">Polling Lag</div>
+                <div class="text-2xl font-headline font-black text-slate-900">TWO CASTERS</div>
+                <div class="text-slate-500 uppercase text-[10px] tracking-wider mt-0.5">One Arena log</div>
               </div>
               <div>
-                <div class="text-2xl font-headline font-black text-red-600">100% LOCAL</div>
-                <div class="text-slate-500 uppercase text-[10px] tracking-wider mt-0.5">Offline Neural TTS</div>
+                <div class="text-2xl font-headline font-black text-red-600">LOCAL VOICES</div>
+                <div class="text-slate-500 uppercase text-[10px] tracking-wider mt-0.5">After model download</div>
               </div>
               <div>
-                <div class="text-2xl font-headline font-black text-slate-900">20,000+</div>
-                <div class="text-slate-500 uppercase text-[10px] tracking-wider mt-0.5">Card Database</div>
+                <div class="text-2xl font-headline font-black text-slate-900">AI OPTIONAL</div>
+                <div class="text-slate-500 uppercase text-[10px] tracking-wider mt-0.5">Bring your own model</div>
               </div>
             </div>
 
@@ -267,13 +272,13 @@
       
       <div class="border-b border-slate-200 pb-4 mb-10 flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
-          <span class="font-mono text-xs text-red-600 font-bold uppercase tracking-wider">LIVE STUDIO CONSOLE</span>
+          <span class="font-mono text-xs text-red-600 font-bold uppercase tracking-wider">BROWSER VOICE DEMO</span>
           <h2 class="font-headline font-black text-4xl sm:text-5xl text-slate-900 uppercase tracking-tight">
-            TEST THE BROADCAST SOUNDBOARD
+            TRY A FEW SAMPLE CALLS
           </h2>
         </div>
         <p class="text-sm text-slate-500 max-w-md">
-          Click any call below to hear real match commentary synthesized live and watch the dual-channel LED peak VU meters respond.
+          These sample lines use your browser’s speech voice. The installed app uses Kokoro neural voices, which sound different. The meters are an animation, not measured audio levels.
         </p>
       </div>
 
@@ -287,12 +292,12 @@
               STUDIO DESK CONSOLE &bull; MODEL AOA-1
             </div>
             <div class="font-mono text-xs text-slate-500 mt-0.5">
-              STATUS: <span id="master-status" class="text-emerald-600 font-bold">READY TO BROADCAST</span>
+              STATUS: <span id="master-status" role="status" class="text-emerald-600 font-bold">READY FOR A DEMO</span>
             </div>
           </div>
 
           <!-- Large Console ON AIR Lamp -->
-          <div id="desk-onair" class="on-air-lamp px-4 py-1.5 rounded cursor-pointer flex items-center space-x-2">
+          <div id="desk-onair" class="on-air-lamp px-4 py-1.5 rounded flex items-center space-x-2">
             <span class="w-2.5 h-2.5 rounded-full bg-slate-400"></span>
             <span class="lamp-text font-headline font-black text-xl tracking-widest uppercase leading-none">ON AIR</span>
           </div>
@@ -367,7 +372,7 @@
                 <span class="text-slate-600 font-bold">CADENCE FADER:</span>
                 <span id="tempo-display" class="font-bold text-slate-900 bg-white px-2 py-0.5 rounded border border-slate-200">1.0x</span>
               </div>
-              <input type="range" id="tempo-slider" min="0.8" max="1.5" step="0.1" value="1.0" class="w-full accent-red-600 cursor-pointer">
+              <input aria-label="Demo speech speed" type="range" id="tempo-slider" min="0.8" max="1.5" step="0.1" value="1.0" class="w-full accent-red-600 cursor-pointer">
               <div class="flex justify-between text-[10px] font-mono text-slate-400">
                 <span>0.8x (Deliberate)</span>
                 <span>1.0x (Standard)</span>
@@ -477,7 +482,7 @@
           <!-- Right: Architecture Intro -->
           <div class="lg:col-span-6 space-y-6">
             <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 border border-blue-200 text-blue-700 font-mono text-xs font-bold uppercase tracking-wider">
-              <span>Cyber Athletics Platform</span>
+              <span>Your match, on air</span>
             </div>
 
             <h2 class="font-headline font-black text-4xl sm:text-5xl uppercase tracking-tight text-slate-900 leading-none">
@@ -494,7 +499,7 @@
                 <span>ZERO MEMORY HOOKS &bull; ZERO PACKET TAMPERING</span>
               </div>
               <p class="font-sans text-slate-500">
-                Built strictly on Wizards of the Coast's official diagnostic log interface. Clean, safe, and completely air-gapped from external cloud services.
+                Reads Arena’s diagnostic log on your computer. Built-in commentary runs locally after setup. Optional AI commentary sends selected game facts to the model provider you configure; coaching is off by default.
               </p>
             </div>
           </div>
@@ -509,9 +514,9 @@
             <div class="w-10 h-10 rounded-lg bg-emerald-50 text-emerald-700 font-mono text-sm font-bold flex items-center justify-center border border-emerald-200">
               01
             </div>
-            <h3 class="font-headline font-bold text-xl uppercase text-slate-900">0ms Inode Tailer</h3>
+            <h3 class="font-headline font-bold text-xl uppercase text-slate-900">Follows your match</h3>
             <p class="text-xs text-slate-600 leading-relaxed">
-              Directly polls MTGA's diagnostic <code>Player.log</code> via open file descriptors. Survives client restarts, inode swaps, and truncations without memory injection.
+              Reads Arena’s <code>Player.log</code> and follows the action through game changes and client restarts. Enable Detailed Logs in Arena to get started.
             </p>
           </div>
 
@@ -522,7 +527,7 @@
             </div>
             <h3 class="font-headline font-bold text-xl uppercase text-slate-900">Dynamic Tempo</h3>
             <p class="text-xs text-slate-600 leading-relaxed">
-              Fast game tempo automatically prunes un-spoken backlogs, shifts to punchy short-form phrases, and silences low-salience routine filler to prevent lag.
+              Choose the pace and how much airtime goes to calling plays or discussing the position. Stale lines are dropped as the game moves on.
             </p>
           </div>
 
@@ -531,9 +536,9 @@
             <div class="w-10 h-10 rounded-lg bg-red-50 text-red-700 font-mono text-sm font-bold flex items-center justify-center border border-red-200">
               03
             </div>
-            <h3 class="font-headline font-bold text-xl uppercase text-slate-900">QR6 Anti-Drone</h3>
+            <h3 class="font-headline font-bold text-xl uppercase text-slate-900">Your caster desk</h3>
             <p class="text-xs text-slate-600 leading-relaxed">
-              Guaranteed variety. An 8-utterance sliding window enforces syntactic shifts between actor leads, card leads, and combat glosses to eliminate robotic monotony.
+              Choose one or two casters, pick their voices, and preview the booth before a game. Settings, match recaps, and diagnostic status live in the desktop window.
             </p>
           </div>
 
@@ -542,9 +547,9 @@
             <div class="w-10 h-10 rounded-lg bg-sky-50 text-sky-700 font-mono text-sm font-bold flex items-center justify-center border border-sky-200">
               04
             </div>
-            <h3 class="font-headline font-bold text-xl uppercase text-slate-900">100% Offline TTS</h3>
+            <h3 class="font-headline font-bold text-xl uppercase text-slate-900">Local neural voices</h3>
             <p class="text-xs text-slate-600 leading-relaxed">
-              Powered locally by Kokoro 82M neural TTS or zero-dependency OS fallbacks (macOS <code>say</code>, Windows SAPI, Linux Piper). No subscriptions or API keys.
+              Kokoro generates speech on your computer after the initial model downloads. Built-in commentary needs no API account. Optional AI writing uses your own provider and may incur usage charges.
             </p>
           </div>
 
@@ -553,68 +558,56 @@
       </div>
     </section>
 
-    <!-- Terminal & Installation Quickstart -->
     <section id="quickstart" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 bg-white">
-      
       <div class="editorial-card rounded-2xl p-6 sm:p-10 bg-white">
-        
-        <div class="border-b border-slate-200 pb-6 mb-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div class="border-b border-slate-200 pb-6 mb-8">
+          <span class="font-mono text-xs text-red-600 font-bold uppercase tracking-wider">GET YOUR BOOTH READY</span>
+          <h2 class="font-headline font-black text-3xl sm:text-4xl text-slate-900 uppercase mt-1">INSTALL ARENAONAIR</h2>
+          <p class="mt-3 text-slate-600 text-sm max-w-3xl">This early release installs from source using a terminal. The launcher installs Python 3.12, the desktop window, and neural voices for you. Allow several minutes and several GB of disk space for the first downloads.</p>
+        </div>
+        <div class="flex flex-wrap gap-2 border-b border-slate-200 pb-4 mb-6" id="os-selector" role="tablist" aria-label="Installation operating system">
+          <button id="tab-mac" role="tab" aria-selected="true" aria-controls="install-panel" tabindex="0" class="os-tab-btn active px-4 py-2 rounded-md font-mono text-xs font-bold bg-slate-900 text-white transition" data-os="mac">macOS</button>
+          <button id="tab-win" role="tab" aria-selected="false" aria-controls="install-panel" tabindex="-1" class="os-tab-btn px-4 py-2 rounded-md font-mono text-xs font-bold text-slate-600 transition" data-os="win">Windows</button>
+          <button id="tab-linux" role="tab" aria-selected="false" aria-controls="install-panel" tabindex="-1" class="os-tab-btn px-4 py-2 rounded-md font-mono text-xs font-bold text-slate-600 transition" data-os="linux">Linux</button>
+        </div>
+        <div id="install-panel" role="tabpanel" aria-labelledby="tab-mac" class="space-y-7 min-w-0">
           <div>
-            <span class="font-mono text-xs text-red-600 font-bold uppercase tracking-wider">LOCAL RUNTIME INSTALLATION</span>
-            <h2 class="font-headline font-black text-3xl sm:text-4xl text-slate-900 uppercase mt-1">
-              RUN ARENAONAIR ON YOUR MACHINE
-            </h2>
+            <h3 class="font-bold text-slate-900">1. Install uv</h3>
+            <p class="text-sm text-slate-600 mt-2">Run this official uv installer in <span id="shell-name">Terminal</span>, then close and reopen the terminal. <a class="text-red-700 underline" href="https://docs.astral.sh/uv/getting-started/installation/">More installation options</a>.</p>
+            <pre id="uv-install" class="mt-3 p-4 rounded-lg bg-slate-100 text-slate-800 text-xs font-mono overflow-x-auto">curl -LsSf https://astral.sh/uv/install.sh | sh</pre>
           </div>
-          <span class="font-mono text-xs text-slate-600 bg-slate-100 px-3 py-1.5 rounded-md border border-slate-200">
-            PYTHON 3.10 &ndash; 3.14 SUPPORTED
-          </span>
-        </div>
-
-        <!-- OS Selector Tabs -->
-        <div class="flex items-center space-x-2 border-b border-slate-200 pb-4 mb-6" id="os-selector">
-          <button class="os-tab-btn active px-4 py-2 rounded-md font-mono text-xs font-bold uppercase tracking-wider bg-slate-900 text-white transition" data-os="mac">
-            macOS (Apple Silicon &amp; Intel)
-          </button>
-          <button class="os-tab-btn px-4 py-2 rounded-md font-mono text-xs font-bold uppercase tracking-wider text-slate-600 hover:text-slate-900 transition" data-os="win">
-            Windows 10 / 11
-          </button>
-          <button class="os-tab-btn px-4 py-2 rounded-md font-mono text-xs font-bold uppercase tracking-wider text-slate-600 hover:text-slate-900 transition" data-os="linux">
-            Linux / Steam Deck
-          </button>
-        </div>
-
-        <!-- Terminal Output Window -->
-        <div class="relative bg-slate-950 rounded-xl p-6 font-mono text-xs text-slate-300 shadow-inner border border-slate-800">
-          
-          <button id="copy-btn" class="absolute top-4 right-4 px-3.5 py-1.5 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-mono transition flex items-center gap-1.5">
-            <svg class="w-3.5 h-3.5 fill-none stroke-current" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-            <span id="copy-label">COPY COMMANDS</span>
-          </button>
-
-          <pre id="terminal-code" class="overflow-x-auto leading-relaxed text-slate-200"><span class="text-slate-500"># 1. Clone repository</span>
-git clone https://github.com/josharmour/arenaonair.git
-cd arenaonair
-
-<span class="text-slate-500"># 2. Set up Python environment &amp; install with neural voice</span>
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]" kokoro soundfile
-
-<span class="text-slate-500"># 3. Launch live announcer daemon</span>
-python -m arenaonair.app</pre>
-        </div>
-
-        <!-- MTG Arena Setup Notice -->
-        <div class="mt-6 p-4 rounded-xl bg-amber-50 border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-xs font-mono text-amber-900">
-          <div class="flex items-center gap-2">
-            <span class="w-2.5 h-2.5 rounded-full bg-amber-600"></span>
-            <span><strong>MTG Arena Setting:</strong> Ensure <strong>Detailed Logs (Plugin Support)</strong> is toggled ON under <em>Options &gt; Account</em>.</span>
+          <div>
+            <h3 class="font-bold text-slate-900">2. Get ArenaOnAir</h3>
+            <p class="text-sm text-slate-600 mt-2"><a class="text-red-700 underline font-semibold" href="https://github.com/josharmour/arenaonair/archive/refs/heads/main.zip">Download the source ZIP</a>, extract it to a permanent folder, and open your terminal in the extracted <code>arenaonair-main</code> folder. Git users can <a class="text-red-700 underline" href="https://github.com/josharmour/arenaonair#install">clone the repository</a> instead.</p>
           </div>
-          <a href="https://github.com/josharmour/arenaonair#readme" target="_blank" rel="noopener noreferrer" class="text-red-700 hover:underline uppercase font-bold inline-flex items-center gap-1">
-            Setup Guide on GitHub &rarr;
-          </a>
+          <div>
+            <h3 class="font-bold text-slate-900">3. Enable Arena’s logs</h3>
+            <p class="text-sm text-slate-600 mt-2">Launch MTG Arena, turn on <strong>Options → Account → Detailed Logs (Plugin Support)</strong>, then restart Arena. Linux also needs a working Arena installation through Wine or Proton.</p>
+          </div>
+          <div>
+            <h3 class="font-bold text-slate-900">4. Set up and launch</h3>
+            <p class="text-sm text-slate-600 mt-2">Run each command below in order. Choose <strong>no</strong> to the AI question for built-in commentary. Setup may flag missing card data; the next command downloads it. Fix any remaining <code>[x ]</code> problems shown by <code>doctor</code>.</p>
+            <div class="mt-3 bg-slate-950 rounded-xl p-4 sm:p-6 font-mono text-xs text-slate-200 border border-slate-800">
+              <div class="flex justify-end mb-4"><button id="copy-btn" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700"><span id="copy-label" role="status">COPY COMMANDS</span></button></div>
+              <pre id="terminal-code" class="overflow-x-auto leading-relaxed"># In the extracted/cloned ArenaOnAir folder:
+bash ./run.sh setup
+bash ./run.sh build-carddb
+bash ./run.sh doctor
+bash ./run.sh install-app
+bash ./run.sh --ui</pre>
+            </div>
+            <p class="text-sm text-slate-600 mt-3">Click <strong>Hear the booth</strong> before starting a match. The first voice initialization downloads model files. After setup, open the app from your <span id="launcher-location">Applications folder</span>. Keep the source folder and environment in place.</p>
+          </div>
         </div>
-
+        <div class="mt-8 p-5 rounded-xl bg-red-50 border border-red-100 text-sm text-slate-700">
+          <h3 class="font-bold text-slate-900">Want AI commentary?</h3>
+          <p class="mt-2">Connect your own compatible model endpoint and API key. Provider charges may apply, and selected game facts are sent to that endpoint. No hosted account is included. <a class="text-red-700 underline" href="https://github.com/josharmour/arenaonair/blob/main/docs/llm-booth.md#connect-your-model">Set up the AI booth</a>.</p>
+        </div>
+        <div class="mt-6 flex flex-wrap gap-5 text-sm font-semibold">
+          <a class="text-red-700 underline" href="https://github.com/josharmour/arenaonair#install">Full installation guide</a>
+          <a class="text-red-700 underline" href="https://github.com/josharmour/arenaonair/blob/main/docs/install.md#troubleshooting">Troubleshooting &amp; updates</a>
+          <a class="text-red-700 underline" href="https://github.com/josharmour/arenaonair/blob/main/docs/usage.md">Using the app</a>
+        </div>
       </div>
     </section>
 
@@ -626,9 +619,9 @@ python -m arenaonair.app</pre>
       <div class="flex items-center space-x-3">
         <span class="font-headline font-black text-xl text-slate-900 uppercase tracking-tight">ARENA<span class="text-red-600">ONAIR</span></span>
         <span>&bull;</span>
-        <span>BROADCAST FREQ 94.7 FM</span>
+        <a href="https://github.com/josharmour/arenaonair/issues" class="hover:text-red-600">HELP &amp; FEEDBACK</a>
         <span>&bull;</span>
-        <span>OPEN SOURCE (MIT)</span>
+        <a href="https://github.com/josharmour/arenaonair" class="hover:text-red-600">SOURCE ON GITHUB</a>
       </div>
       <div class="text-center sm:text-right text-slate-400">
         Unofficial fan project. Magic: The Gathering Arena is a trademark of Wizards of the Coast LLC.
@@ -645,32 +638,55 @@ python -m arenaonair.app</pre>
       const copyBtn = document.getElementById('copy-btn');
       const copyLabel = document.getElementById('copy-label');
 
-      const osSnippets = {
-        mac: `# 1. Clone repository\ngit clone https://github.com/josharmour/arenaonair.git\ncd arenaonair\n\n# 2. Set up Python environment & install with neural voice\npython3 -m venv .venv\nsource .venv/bin/activate\npip install -e ".[dev]" kokoro soundfile\n\n# 3. Launch live announcer daemon\npython -m arenaonair.app`,
-        win: `# 1. Clone repository\ngit clone https://github.com/josharmour/arenaonair.git\ncd arenaonair\n\n# 2. Set up Python environment & install\npython -m venv .venv\n.venv\\Scripts\\activate\npip install -e .\n\n# 3. Launch live announcer daemon (uses Windows SAPI or Kokoro)\npython -m arenaonair.app`,
-        linux: `# 1. Clone repository\ngit clone https://github.com/josharmour/arenaonair.git\ncd arenaonair\n\n# 2. Set up Python environment & install\npython3 -m venv .venv\nsource .venv/bin/activate\npip install -e .\n\n# 3. Launch live announcer daemon (uses Piper or eSpeak)\npython -m arenaonair.app`
-      };
-
-      osTabs.forEach(tab => {
-        tab.addEventListener('click', () => {
-          osTabs.forEach(t => {
-            t.classList.remove('active', 'bg-slate-900', 'text-white');
-            t.classList.add('text-slate-600');
-          });
-          tab.classList.add('active', 'bg-slate-900', 'text-white');
-          tab.classList.remove('text-slate-600');
-          const os = tab.dataset.os;
-          terminalCode.textContent = osSnippets[os] || osSnippets.mac;
+      const osSnippets = {"mac": "# In the extracted/cloned ArenaOnAir folder:\nbash ./run.sh setup\nbash ./run.sh build-carddb\nbash ./run.sh doctor\nbash ./run.sh install-app\nbash ./run.sh --ui", "win": "# PowerShell, in the extracted/cloned ArenaOnAir folder:\npowershell -NoProfile -ExecutionPolicy Bypass -File .\\run.ps1 setup\npowershell -NoProfile -ExecutionPolicy Bypass -File .\\run.ps1 build-carddb\npowershell -NoProfile -ExecutionPolicy Bypass -File .\\run.ps1 doctor\npowershell -NoProfile -ExecutionPolicy Bypass -File .\\run.ps1 install-app\npowershell -NoProfile -ExecutionPolicy Bypass -File .\\run.ps1 --ui", "linux": "# Debian/Ubuntu: install audio and desktop libraries first.\nsudo apt-get update\nsudo apt-get install -y espeak-ng alsa-utils libportaudio2 libegl1 libxcb-cursor0 libxkbcommon-x11-0\n\n# In the extracted/cloned ArenaOnAir folder:\nbash ./run.sh setup\nbash ./run.sh build-carddb\nbash ./run.sh doctor\nbash ./run.sh install-app\nbash ./run.sh --ui"};
+      const installers = {"mac": "curl -LsSf https://astral.sh/uv/install.sh | sh", "win": "powershell -ExecutionPolicy ByPass -c \"irm https://astral.sh/uv/install.ps1 | iex\"", "linux": "curl -LsSf https://astral.sh/uv/install.sh | sh"};
+      const locations = {mac: 'Applications folder', win: 'Start menu', linux: 'applications menu'};
+      function selectOS(tab) {
+        osTabs.forEach(t => {
+          const selected = t === tab;
+          t.classList.toggle('active', selected);
+          t.classList.toggle('bg-slate-900', selected);
+          t.classList.toggle('text-white', selected);
+          t.classList.toggle('text-slate-600', !selected);
+          t.setAttribute('aria-selected', String(selected));
+          t.tabIndex = selected ? 0 : -1;
+        });
+        const os = tab.dataset.os;
+        terminalCode.textContent = osSnippets[os];
+        document.getElementById('uv-install').textContent = installers[os];
+        document.getElementById('shell-name').textContent = os === 'win' ? 'PowerShell' : 'Terminal';
+        document.getElementById('launcher-location').textContent = locations[os];
+        document.getElementById('install-panel').setAttribute('aria-labelledby', tab.id);
+        copyLabel.textContent = 'COPY COMMANDS';
+      }
+      osTabs.forEach((tab, index) => {
+        tab.addEventListener('click', () => selectOS(tab));
+        tab.addEventListener('keydown', event => {
+          let next;
+          if (event.key === 'ArrowRight') next = (index + 1) % osTabs.length;
+          if (event.key === 'ArrowLeft') next = (index + osTabs.length - 1) % osTabs.length;
+          if (event.key === 'Home') next = 0;
+          if (event.key === 'End') next = osTabs.length - 1;
+          if (next !== undefined) {
+            event.preventDefault();
+            selectOS(osTabs[next]);
+            osTabs[next].focus();
+          }
         });
       });
-
-      // Copy Button
-      copyBtn.addEventListener('click', () => {
-        const textToCopy = terminalCode.textContent;
-        navigator.clipboard.writeText(textToCopy).then(() => {
+      copyBtn.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(terminalCode.textContent);
           copyLabel.textContent = 'COPIED!';
-          setTimeout(() => { copyLabel.textContent = 'COPY COMMANDS'; }, 2000);
-        });
+        } catch {
+          copyLabel.textContent = 'SELECT COMMANDS TO COPY';
+          const range = document.createRange();
+          range.selectNodeContents(terminalCode);
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+        setTimeout(() => { copyLabel.textContent = 'COPY COMMANDS'; }, 3000);
       });
 
       // Soundboard & Live Peak VU Meter
@@ -691,19 +707,20 @@ python -m arenaonair.app</pre>
         if (active) {
           headerOnAir.classList.add('active');
           deskOnAir.classList.add('active');
-          masterStatus.textContent = 'BROADCASTING TRANSMISSION';
+          masterStatus.textContent = 'PLAYING BROWSER VOICE';
           masterStatus.className = 'text-red-600 font-bold';
           startVuMeter();
         } else {
           headerOnAir.classList.remove('active');
           deskOnAir.classList.remove('active');
-          masterStatus.textContent = 'READY TO BROADCAST';
+          masterStatus.textContent = 'READY FOR A DEMO';
           masterStatus.className = 'text-emerald-600 font-bold';
           stopVuMeter();
         }
       }
 
       function startVuMeter() {
+        if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
         if (vuInterval) clearInterval(vuInterval);
         vuInterval = setInterval(() => {
           const lvlL = Math.min(12, Math.max(2, Math.floor(Math.random() * 8) + 4));
@@ -758,12 +775,11 @@ python -m arenaonair.app</pre>
 
             utterance.onstart = () => { setOnAir(true); };
             utterance.onend = () => { setOnAir(false); };
-            utterance.onerror = () => { setOnAir(false); };
+            utterance.onerror = () => { setOnAir(false); masterStatus.textContent = 'BROWSER AUDIO UNAVAILABLE'; };
 
             window.speechSynthesis.speak(utterance);
           } else {
-            setOnAir(true);
-            setTimeout(() => { setOnAir(false); }, 3500);
+            masterStatus.textContent = 'BROWSER SPEECH IS NOT SUPPORTED';
           }
         });
       });

@@ -308,7 +308,7 @@ class _Slot:
     """Internal per-slot state for MultiLogWatcher (mirrors LogWatcher's
     fixed truncation/rotation/partial-line logic, minus anchoring)."""
 
-    __slots__ = ("path", "fh", "offset", "pending", "identity")
+    __slots__ = ("path", "fh", "offset", "pending", "identity", "generation")
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -316,6 +316,7 @@ class _Slot:
         self.offset = 0
         self.pending = bytearray()
         self.identity: tuple[int, int] | None = None
+        self.generation = -1
 
 
 class MultiLogWatcher:
@@ -340,6 +341,15 @@ class MultiLogWatcher:
     """
 
     MAX_SLOTS = 2
+
+    @property
+    def generations(self):
+        return {sid: s.generation for sid, s in enumerate(self._slots)}
+
+    @property
+    def source_health(self):
+        return {sid: s.fh is not None and self._stat_identity(s) is not None
+                for sid, s in enumerate(self._slots)}
 
     def __init__(
         self,
@@ -395,12 +405,19 @@ class MultiLogWatcher:
 
         out: list[tuple[float, str]] = []
 
+        if self._stat_identity(slot) is None:
+            if slot.fh is not None:
+                slot.fh.close()
+                slot.fh = None
+            return out
+
         if slot.fh is None or self._need_reopen(slot):
             if not self._open(slot):
                 return out  # missing/unreadable: this slot yields nothing,
                              # other slots are unaffected (independence)
 
         assert slot.fh is not None
+        self._check_shrunk(slot)
         data = self._read_available(slot)
         if data:
             out.extend(self._consume(slot, data))
@@ -444,6 +461,7 @@ class MultiLogWatcher:
             fh.seek(start)
             slot.fh = fh
             slot.identity = ident
+            slot.generation += 1
             slot.offset = start
             slot.pending.clear()
             return True
@@ -501,6 +519,7 @@ class MultiLogWatcher:
                 slot.fh.seek(0)
                 slot.offset = 0
                 slot.pending.clear()
+                slot.generation += 1
                 return True
             except OSError:
                 return False

@@ -5,19 +5,27 @@ build-backend = "hatchling.build"
 [project]
 name = "arenaonair"
 version = "0.1.0"
-description = "Play-by-play radio-style narration for MTG Arena matches. Announcer, never coach."
-requires-python = ">=3.10"
+description = "Play-by-play radio-style narration for MTG Arena matches. Announcer first, coaching optional."
+readme = "README.md"
+requires-python = ">=3.11"
 license = { text = "MIT" }
-dependencies = []
+dependencies = ["websockets>=14,<17"]
 
 [project.optional-dependencies]
 watchdog = ["watchdog>=4"]
 ui = ["PySide6>=6.6"]
-tts = ["kokoro-onnx>=0.4", "numpy>=1.24", "sounddevice>=0.4"]
-dev = ["pytest>=8", "pytest-timeout>=2"]
+# Kokoro's English phonemizer downloads a spaCy model on first use. Including
+# pip makes that download target this interpreter, even in an unactivated uv venv.
+tts = ["kokoro>=0.9", "numpy>=1.24", "sounddevice>=0.4", "pip>=24"]
+dev = ["pytest>=8", "pytest-timeout>=2", "numpy>=1.24"]
 
 [project.scripts]
 arenaonair = "arenaonair.app:main"
+
+[project.urls]
+Homepage = "https://github.com/josharmour/arenaonair"
+Documentation = "https://github.com/josharmour/arenaonair#readme"
+Issues = "https://github.com/josharmour/arenaonair/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/arenaonair"]

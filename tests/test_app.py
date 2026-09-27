@@ -383,3 +383,15 @@ class TestFastTempoAndQueuePruning:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_the_scripted_booth_calls_an_unsayable_opponent_the_opponent(tmp_path):
+    records = _load_records(_FIXTURES / "match_01.jsonl")
+    for rec in records:
+        room = rec["obj"].get("matchGameRoomStateChangedEvent", {}).get("gameRoomInfo", {})
+        for player in room.get("gameRoomConfig", {}).get("reservedPlayers", []):
+            if player.get("playerName") == "Creole":
+                player["playerName"] = "Creole1337"
+    code, out = _run_once(_write_player_log(records, tmp_path / "Player.log"), verbosity="detailed")
+    assert code == 0
+    assert "Creole1337" not in out and "the opponent" in out.lower()

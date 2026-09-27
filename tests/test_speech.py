@@ -659,3 +659,21 @@ class TestRealEnginesOnThisBox:
 
         # Even if the binary existed, no model dir configured -> unavailable.
         assert PiperEngine().available() is False
+
+
+def test_pump_speaks_and_records_the_prepared_line():
+    from dataclasses import replace
+    queue, speaker = SpeechQueue(), FakeSpeaker()
+    queue.set_active_match("m1")
+    pump = SpeechPump(queue, speaker, prepare=lambda u: replace(u, text=u.text.upper(), rate=u.rate * 2))
+    queue.enqueue(replace(mk("u1", text="hello"), rate=1.1))
+    result = pump.run_once()
+    assert result.ok and [(u.text, u.rate) for u in speaker.calls] == [("HELLO", 2.2)]
+
+
+@pytest.mark.parametrize('platform', ['win32', 'darwin', 'linux'])
+def test_default_casters_use_english_phonemizer_on_every_os(monkeypatch, platform):
+    from arenaonair.platform import tts
+    monkeypatch.setattr(tts.sys, 'platform', platform)
+    assert tts.KokoroEngine().lang_code == 'a'
+    assert tts.KokoroEngine(lang_code='b').lang_code == 'b'

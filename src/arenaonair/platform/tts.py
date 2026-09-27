@@ -140,10 +140,14 @@ class KokoroEngine(TTSEngine):
         self.voice = voice
         self.speed = speed
         self.device = device or "cpu"
-        self.lang_code = lang_code or ("z" if sys.platform.startswith("win")
-                                       else "a")
+        # The supplied caster voices and narration are English on every OS.
+        # "z" selects Mandarin and requires a different optional phonemizer.
+        self.lang_code = lang_code or "a"
         self.player_bin = player_bin  # optional explicit playback binary
         self._pipeline = None
+        # The window can warm a newly picked voice while the speech thread
+        # speaks; only one of them may build the model.
+        self._pipeline_lock = threading.Lock()
         # Cancellation is scoped to the in-flight utterance via a generation
         # token: cancel() bumps the generation and flags the CURRENT one; a
         # later speak() starts a fresh generation and is never affected by an
@@ -270,12 +274,13 @@ class KokoroEngine(TTSEngine):
     # -- synthesis ---------------------------------------------------------
 
     def _get_pipeline(self):
-        if self._pipeline is None:
-            from kokoro import KPipeline  # heavy import deferred
+        with self._pipeline_lock:
+            if self._pipeline is None:
+                from kokoro import KPipeline  # heavy import deferred
 
-            self._pipeline = KPipeline(lang_code=self.lang_code,
-                                       device=self.device)
-        return self._pipeline
+                self._pipeline = KPipeline(lang_code=self.lang_code,
+                                           device=self.device)
+            return self._pipeline
 
     def _synthesize_pcm(self, text: str, rate: float = 1.0,
                         voice: str | None = None, generation: int = 0):

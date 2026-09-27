@@ -35,16 +35,28 @@ if __name__ == "__main__" and sys.version_info < (3, 11):
     if launcher.is_file():
         os.execv("/bin/bash", ["bash", str(launcher), *sys.argv[1:]])
     raise SystemExit("ArenaOnAir requires Python 3.11 or newer.")
+# Also support direct execution of src/arenaonair/app.py with a modern Python.
+if __name__ == "__main__" and not __package__:
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    __package__ = "arenaonair"
+
+import os
 import threading
 import time
+from pathlib import Path
 
 from . import config as config_mod
 from . import events as ev
 from .carddb import DEFAULT_DB_PATH, CardDb
 from .differ import EventDiffer
 from .gre_parser import parse_line_all
-from .models import DeliveryResult
-from .narrator import DialogueSequencer, Narrator
+from .models import DeliveryResult, Utterance
+from .narrator import Narrator
+from . import names
+from . import personas
+from .llm_booth import GenerativeBooth
+from .card_knowledge import CardKnowledge
 from .pacing import compute_pacing
 from .speech import (
     PRESERVED_KINDS,
@@ -80,6 +92,13 @@ VERBOSITY_GATE: dict[str, int] = {
 
 #: Event kinds that bypass the verbosity gate entirely.
 ALWAYS_SPOKEN_KINDS = frozenset({"match_start", "match_end"})
+
+#: Scripted booth: routine lines each commentary focus leaves unsaid (salient ones always play).
+FOCUS_SKIPS: dict[str, frozenset] = {
+    "calls": frozenset({"narrative_resource", "narrative_callback", "narrative_speculation"}),
+    "balanced": frozenset(),
+    "analysis": frozenset({"land_drop", "resolve", "turn_start"}),
+}
 
 #: Consecutive idle polls before --once declares the stream done.
 IDLE_POLLS_BEFORE_DONE = 2
@@ -158,18 +177,47 @@ class ArenaOnAirApp:
             card_lookup=card_lookup,
         )
         self.narrator = Narrator(window=self.config.window)
-        # Dual-booth dialogue (S3.2/S8.5): sequencer enabled only in dual
-        # mode; solo mode keeps the legacy single-caster behavior exactly.
+        from .analyst import TemplateAnalyst
+        lines = getattr(self.config, "analyst_lines_per_turn", None)
+        self.analyst = TemplateAnalyst(card_lookup=card_lookup, lines_per_turn=1 if lines is None else lines)
+        # Voice routing is independent of the ingestion source count.
         booth = config_mod.resolve_booth(self.config)
+        self.persona = personas.get(booth.get("persona"))
+        booth["style"] = self.persona.style if self.persona else None
         self.booth = booth
         self.booth_mode = booth["mode"]
-        self.dialogue = DialogueSequencer(
-            window=self.config.window,
-            enabled=(self.booth_mode == "dual"),
-        )
+        self.hole_cards = config_mod.hole_cards_enabled(self.config)
+        self.warnings: list[str] = []
         self.queue = SpeechQueue()
+        self.narration_mode = ("llm" if self.config.llm_base_url else "legacy") if self.config.narration_mode == "auto" else self.config.narration_mode
+        self.llm = (GenerativeBooth(self.config, self.queue, booth, carddb=self.carddb, knowledge=CardKnowledge())
+                    if self.narration_mode == "llm" else None)
+
+        # Cross-match memory, match records and automatic recaps (local only).
+        self.history = self.recorder = None
+        self.last_recap = None
+        if getattr(self.config, "history_enabled", True):
+            try:
+                from .history import HistoryStore
+                from .matchlog import MatchRecorder
+                data = config_mod.data_dir(self.config)
+                self.history = HistoryStore(data / "history.sqlite")
+                self.recorder = MatchRecorder(data, history=self.history, on_game_saved=self._game_saved)
+            except Exception as exc:
+                logger.warning("match history unavailable: %s", exc)
+        if self.llm:
+            self.llm.hole_cards = self.hole_cards
+            if self.recorder is not None:
+                self.llm.history_facts = self.recorder.history_facts
+        self.overlay = None
+        if self.llm is None and self.config.narration_mode == "auto":
+            self._warn("No AI model is connected, so commentary is the scripted booth. "
+                       "Run './run.sh setup' (or 'arenaonair setup') to connect one.")
 
         self.speaker = None          # built in start()
+        self.config_path = None      # set by main(); where the window saves settings
+        self._started_with = replace(self.config)  # settings the running objects were built from
+        self._pending_restart: dict = {}           # saved settings that apply on the next launch
         self.pump = None
         self.watcher = None
 
@@ -181,6 +229,7 @@ class ArenaOnAirApp:
         self._state = AppState.STARTING
         self._match_id = None
         self._last_utterance = None
+        self._said_names: dict[str, str] = {}  # player name -> how the booth says it
         self._last_event_time = 0.0
         self._last_speech_time = 0.0
         self._last_play_snap_id = None
@@ -215,8 +264,23 @@ class ArenaOnAirApp:
                     preload = getattr(engine, "preload_voices", None)
                     if callable(preload):
                         preload([v for v in (self.booth["pbp_voice"], self.booth["analyst_voice"]) if v])
-            self.pump = SpeechPump(queue=self.queue, speaker=speaker,
-                                   handoff_gap_s=self.config.co_caster_delay_ms / 1000.0)
+            self.pump = SpeechPump(queue=self.queue, speaker=speaker, handoff_gap_s=self.handoff_gap_s)
+
+        self.pump.on_delivery = self._delivered
+        self.pump.validate = self._valid_for_delivery
+        self.pump.prepare = self._on_air
+        if self.llm:
+            self.llm.start()
+
+        if getattr(self.config, "overlay_port", 0) and self.overlay is None:
+            from .overlay import OverlayServer
+            try:
+                self.overlay = OverlayServer(self.config.overlay_port)
+                self.overlay.start()
+            except OSError as exc:
+                self.overlay = None
+                self._warn(f"OBS overlay could not start on port {self.config.overlay_port}: {exc}")
+        self._check_detailed_logs()
 
         if self.route == "relay_server":
             from .relay import RelayLogSource
@@ -243,6 +307,121 @@ class ArenaOnAirApp:
         )
         self._watch_thread.start()
 
+    @property
+    def handoff_gap_s(self) -> float:
+        """Pause between a call and its analyst reply. Printed text has no audio
+        to pace, and a pause would only let a fast replay race the printer."""
+        return 0.0 if self.dry_run else self.config.co_caster_delay_ms / 1000.0
+
+    def _valid_for_delivery(self, utt) -> bool:
+        """Last check before a line starts (never used to cut one mid-sentence)."""
+        # Taking the analyst off air mid-match also drops their unspoken lines.
+        if utt.role == "color_analyst" and self.booth_mode != "dual":
+            return False
+        if not self.llm:
+            return True
+        # A late play call describes a board that has moved on (a stack long
+        # resolved); drop it and let the booth catch up. Its replies go with it.
+        if (utt.kind == "llm_commentary" and utt.role == "play_by_play" and utt.salience < ev.SALIENCE_MUST_SPEAK
+                and self.llm.now() - utt.ts_created > self.config.llm_call_max_age):
+            return False
+        return self.llm.valid_for_delivery(utt)
+
+    def _on_air(self, utt):
+        """The line as spoken: names the booth can't say become roles, at the chosen speed."""
+        # Every engine gets the range Kokoro accepts, even with excitement on top.
+        return replace(utt, text=names.scrub(utt.text, self._said_names),
+                       rate=max(0.5, min(utt.rate * self.config.speech_speed, 2.0)))
+
+    def _warn(self, message: str) -> None:
+        if message not in self.warnings:
+            self.warnings.append(message)
+            logger.warning(message)
+
+    def _check_detailed_logs(self) -> None:
+        """Tell the player up front when Arena isn't writing game events."""
+        if self.route not in ("single", "auto"):
+            return
+        from .doctor import DETAILED_LOGS_FIX, detailed_logs_status, resolve_log_path
+        path = resolve_log_path(self.config)
+        if path is None or not path.is_file():
+            self._warn("MTG Arena's Player.log wasn't found yet. Start Arena, or pass --log-path.")
+        elif detailed_logs_status(path) is False:
+            self._warn("Arena's detailed logs are off, so there's nothing to commentate. " + DETAILED_LOGS_FIX)
+
+    def _delivered(self, result, utt) -> None:
+        """Speech-pump delivery hook shared by the booth, recorder and overlay."""
+        if self.llm:
+            self.llm.delivered(result, utt)
+        if self.recorder is not None:
+            self.recorder.spoken(result, utt)
+        if self.overlay is not None and result.ok:
+            name = self.booth.get("analyst_name" if utt.role == "color_analyst" else "pbp_name")
+            self.overlay.caption(utt.role, name, utt.text)
+
+    def _game_saved(self, match, game) -> None:
+        if not getattr(self.config, "auto_recap", True):
+            return
+        from .recap import write_recap
+        result = write_recap(match, config_mod.data_dir(self.config) / "recaps", booth=self.booth)
+        self.last_recap = result["markdown"]
+        self._last_recap_lines = result["lines"]
+        logger.info("Recap written: %s (arenaonair recap --audio for a spoken version)", result["markdown"])
+
+    def speak_last_recap(self) -> int:
+        """Voice the latest recap between games; returns lines queued."""
+        lines = getattr(self, "_last_recap_lines", None)
+        if not lines or not self._between_games():
+            return 0
+        return self._queue_between_games("recap", lines)
+
+    def preview_voices(self) -> int:
+        """Let the booth introduce itself in its current voices, between games only."""
+        if not self._between_games():
+            return 0
+        pbp = self.booth.get("pbp_name")
+        lines = [{"role": "play_by_play",
+                  "text": f"This is {pbp}, on the call." if pbp else "Checking the play-by-play voice."}]
+        if self.booth_mode == "dual":
+            analyst = self.booth.get("analyst_name")
+            lines.append({"role": "color_analyst", "text": f"And I'm {analyst}, with the color commentary."
+                          if analyst else "And this is the color analyst."})
+        return self._queue_between_games("voices", lines, kind="voice_check")
+
+    def _between_games(self) -> bool:
+        if self.recorder is None:
+            return self._match_id is None
+        game = getattr(self.recorder, "_game", None)
+        return game is None or bool(game.get("closed"))
+
+    def _queue_between_games(self, prefix: str, lines, kind: str = "recap") -> int:
+        """Queue booth lines in their own scope; returns lines queued.
+
+        The next game snapshot makes that scope stale instantly, so these
+        lines never talk over live play.
+        """
+        self._recap_seq = getattr(self, "_recap_seq", 0) + 1
+        scope = f"{prefix}-{self._recap_seq}"
+        self.queue.set_active_match(scope)
+        self._recap_active = True
+        anchor = None
+        for i, line in enumerate(lines):
+            analyst = line["role"] == "color_analyst" and self.booth_mode == "dual"
+            utt = Utterance(uid=f"{scope}-{i}", match_id=scope, kind=kind, text=line["text"],
+                            salience=ev.SALIENCE_LOW, ts_created=time.monotonic() + i * 1e-3,
+                            voice=self.booth["analyst_voice" if analyst else "pbp_voice"],
+                            role="color_analyst" if analyst else "play_by_play", anchor_uid=anchor)
+            self.queue.enqueue(utt)
+            anchor = utt.uid
+        return len(lines)
+
+    def _private_view(self, snap):
+        """Hide the local hand everywhere downstream when hole cards are off air."""
+        if self.hole_cards or not snap.seat_knowledge:
+            return snap
+        return replace(snap, seat_knowledge={
+            seat: replace(k, hand_visible=False, hand_fresh_asof=None) for seat, k in snap.seat_knowledge.items()})
+
     def set_voice(self, voice: str) -> None:
         """Dynamically switch the broadcast voice on the fly."""
         self.config.tts_voice = str(voice).strip()
@@ -250,11 +429,167 @@ class ArenaOnAirApp:
         if self.speaker is not None and hasattr(self.speaker, "set_voice"):
             self.speaker.set_voice(str(voice).strip())
 
+    def set_booth_voices(self, pbp_voice: str | None = None, analyst_voice: str | None = None) -> bool:
+        """Switch booth voices live and remember them for the next launch.
+
+        The next line queued uses the new voice. A caster named after the old
+        voice takes the new voice's name, so "Adam" never introduces himself
+        in Onyx's voice. Returns True once saved to ``config_path``.
+        """
+        changes = {}
+        for role, voice in (("pbp", pbp_voice), ("analyst", analyst_voice if self.booth_mode == "dual" else None)):
+            voice = str(voice or "").strip()
+            old = self.booth.get(f"{role}_voice")
+            if not voice or voice == old:
+                continue
+            changes[f"{role}_voice"] = self.booth[f"{role}_voice"] = voice
+            name = self.booth.get(f"{role}_name")
+            if name and name == config_mod.caster_name(old):
+                changes[f"{role}_name"] = self.booth[f"{role}_name"] = config_mod.caster_name(voice)
+        if not changes:
+            return False
+        for key, value in changes.items():
+            setattr(self.config, key, value)
+        if "pbp_voice" in changes and self.speaker is not None and hasattr(self.speaker, "set_voice"):
+            self.speaker.set_voice(changes["pbp_voice"])
+        self._warm_voices([v for k, v in changes.items() if k.endswith("_voice")])
+        logger.info("booth voices: pbp=%s analyst=%s", self.booth.get("pbp_voice"), self.booth.get("analyst_voice"))
+        return self._save_broadcast(changes)
+
+    def set_broadcast_mode(self, mode: str) -> bool:
+        """Put the color analyst on air ("dual") or take them off ("solo"), live.
+
+        The play-by-play caster keeps their voice and name. Returns True once
+        saved to ``config_path``.
+        """
+        if mode not in ("solo", "dual") or mode == self.booth_mode:
+            return False
+        self.config.broadcast_mode = mode
+        booth = config_mod.resolve_booth(self.config)
+        booth.update({k: self.booth[k] for k in ("pbp_voice", "pbp_name") if self.booth.get(k)})
+        self.booth.update(booth)  # in place: the generative booth shares this dict
+        self.booth_mode = mode
+        if mode == "dual":
+            self._warm_voices([v for v in (booth["pbp_voice"], booth["analyst_voice"]) if v])
+        logger.info("booth mode: %s (pbp=%s analyst=%s)", mode, booth["pbp_voice"], booth["analyst_voice"])
+        return self._save_broadcast({"mode": mode})
+
+    def set_commentary_focus(self, focus: str) -> bool:
+        """Shift airtime between calling plays and analysing the game, live.
+
+        Returns True once saved to ``config_path``.
+        """
+        if focus not in config_mod.COMMENTARY_FOCUSES or focus == self.config.commentary_focus:
+            return False
+        return self.apply_setting("commentary_focus", focus)["saved"]
+
+    def apply_setting(self, key: str, value) -> dict:
+        """Change one window setting: apply it now when the app can, and save it.
+
+        None or "" restores the default. Returns ``{"saved", "restart"}``;
+        ``restart`` means some saved setting waits for the next launch.
+        Raises ValueError for a bad value or log sources that can't combine.
+        """
+        from .settings import BY_KEY
+        spec = BY_KEY[key]
+        if key == "overlay_port" and value not in (None, "") and 0 < int(value) < 1024:
+            raise ValueError("Use port 0 (overlay off) or a port from 1024 up.")
+        value = config_mod.coerce(key, value)
+        effective = config_mod.default(key) if value is None else value
+        try:
+            config_mod.resolve_route(replace(self.config, **{**self._pending_restart, key: effective}))
+        except config_mod.ConfigConflict:
+            raise ValueError("Use one log source: Player.log, the shared player logs, "
+                             "or the relay. Clear the others first.") from None
+        extra = {}
+        if spec.restart:
+            self._pending_restart[key] = effective
+        else:
+            extra = self._apply_live(key, effective) or {}
+        logger.info("setting %s = %r%s", key, effective, " (next launch)" if spec.restart else "")
+        updates = {spec.section: {spec.name: value}}
+        for section, values in extra.items():
+            updates.setdefault(section, {}).update(values)
+        return {"saved": self._save_settings(updates), "restart": bool(self.restart_needed())}
+
+    def restart_needed(self) -> list[str]:
+        """Saved settings that differ from what this launch is running with."""
+        return sorted(k for k, v in self._pending_restart.items() if getattr(self._started_with, k) != v)
+
+    def _apply_live(self, key: str, value):
+        setattr(self.config, key, value)
+        if key == "persona":
+            self.persona = personas.get(value)
+            self.booth["style"] = self.persona.style if self.persona else None
+            self.booth["persona"] = self.persona.name if self.persona else None
+            # Without a saved voice pair a persona brings its own: keep today's voices next launch too.
+            preset = self.config.booth_preset or self.booth.get("preset")
+            return {"broadcast": {"preset": preset}} if preset else None
+        elif key in ("pbp_name", "analyst_name"):
+            voice = self.booth.get(key.replace("_name", "_voice"))
+            self.booth[key] = value or config_mod.caster_name(voice)
+        elif key == "booth_preset" and value:
+            pbp, analyst, pbp_name, analyst_name = config_mod.BOOTH_PRESETS[value]
+            voices = {"pbp_voice": pbp, "pbp_name": pbp_name, "analyst_voice": analyst, "analyst_name": analyst_name}
+            for k, v in voices.items():
+                setattr(self.config, k, v)
+                if self.booth_mode == "dual" or k.startswith("pbp"):
+                    self.booth[k] = v
+            if self.speaker is not None and hasattr(self.speaker, "set_voice"):
+                self.speaker.set_voice(pbp)
+            self._warm_voices([pbp, analyst])
+            return {"broadcast": dict.fromkeys(voices)}  # the preset governs again
+        elif key in ("hole_cards", "spectator", "stream_enabled", "stream_delay_s"):
+            self.hole_cards = config_mod.hole_cards_enabled(self.config)
+            if self.llm:
+                self.llm.hole_cards = self.hole_cards
+        elif key == "overlay_port":
+            if self.overlay is not None:
+                self.overlay.close()
+                self.overlay = None
+            if value:
+                from .overlay import OverlayServer
+                try:
+                    self.overlay = OverlayServer(value)
+                    self.overlay.start()
+                except OSError as exc:
+                    self.overlay = None
+                    raise ValueError(f"The overlay couldn't use port {value}: {exc}") from None
+        elif key == "co_caster_delay_ms" and self.pump is not None:
+            self.pump.handoff_gap_s = self.handoff_gap_s
+        elif key == "analyst_lines_per_turn":
+            self.analyst.lines_per_turn = 1 if value is None else value
+        return None
+
+    def _save_broadcast(self, changes: dict) -> bool:
+        return self._save_settings({"broadcast": changes})
+
+    def _save_settings(self, updates: dict) -> bool:
+        if self.config_path is None:
+            return False
+        try:
+            config_mod.save_settings(self.config_path, updates)
+        except (OSError, ValueError) as exc:
+            logger.warning("could not save settings to %s: %s", self.config_path, exc)
+            return False
+        return True
+
+    def _warm_voices(self, voices) -> None:
+        """Load newly picked voices off the speech thread so the next line isn't late."""
+        engines = getattr(self.speaker, "engines", None) or [getattr(self.speaker, "engine", None)]
+        loaders = [e.preload_voices for e in engines if callable(getattr(e, "preload_voices", None))]
+        if loaders and voices:
+            threading.Thread(target=lambda: [load(voices) for load in loaders],
+                             name="arenaonair-voice-warmup", daemon=True).start()
+
     def stop(self) -> None:
         """Signal both threads to wind down; join them; shut the speaker."""
         if self.pump is not None:
             self.pump.stop()
         self._stop_event.set()
+
+        if self.llm:
+            self.llm.stop()
 
         for thread in (self._watch_thread, self._speech_thread):
             if thread is not None and thread.is_alive():
@@ -273,6 +608,12 @@ class ArenaOnAirApp:
                 self.carddb.close()
             except Exception:
                 logger.debug("carddb close raised", exc_info=True)
+        if self.recorder is not None:
+            self.recorder.finish_match()
+        if self.history is not None:
+            self.history.close()
+        if self.overlay is not None:
+            self.overlay.close()
 
         with self._state_lock:
             self._state = AppState.STOPPED
@@ -324,7 +665,7 @@ class ArenaOnAirApp:
                     logger.info("--once: watcher idle %d polls; done",
                                 idle_polls)
                     deadline = time.monotonic() + _DRAIN_WAIT_SECONDS
-                    while len(self.queue) > 0 and time.monotonic() < deadline \
+                    while (len(self.queue) > 0 or (self.llm and not self.llm.idle)) and time.monotonic() < deadline \
                             and not self._stop_event.is_set():
                         time.sleep(_DRAIN_POLL_SLEEP)
                     return
@@ -348,7 +689,7 @@ class ArenaOnAirApp:
                 if self._stop_event.is_set():
                     return
               except Exception:
-                logger.exception("watcher line feed raised on %r", str(item)[:120])
+                logger.exception("watcher line feed raised (raw input omitted)")
                 raise
 
             # In --once mode, pace batch reading to allow the test/smoke speaker
@@ -356,7 +697,7 @@ class ArenaOnAirApp:
             # the watcher stays strictly real-time with the game log.
             if self.once_mode:
                 deadline = time.monotonic() + _DRAIN_WAIT_SECONDS
-                while len(self.queue) > 0 and time.monotonic() < deadline \
+                while (len(self.queue) > 0 or (self.llm and not self.llm.idle)) and time.monotonic() < deadline \
                         and not self._stop_event.is_set():
                     time.sleep(_DRAIN_POLL_SLEEP)
 
@@ -379,7 +720,8 @@ class ArenaOnAirApp:
             if snap is None:
                 continue
 
-            snap = with_knowledge(snap, [snap.local_seat] if snap.local_seat is not None else [], time.monotonic())
+            visible = [snap.local_seat] if snap.local_seat is not None and self.hole_cards else []
+            snap = with_knowledge(snap, visible, time.monotonic())
             self._invalidate_analysis(snap)
             self._consume_snapshot(prev_snap, snap, backlog)
             prev_snap, backlog = snap, []
@@ -387,11 +729,20 @@ class ArenaOnAirApp:
         return prev_snap, backlog
 
     def _consume_snapshot(self, prev_snap, snap, backlog):
+        self._diagnostic_game = {
+            "game_id": snap.game_id, "stage": snap.game_stage,
+            "gre_state_id": snap.gre_state_id, "turn": snap.turn_info.turn_number,
+            "chain_valid": snap.chain_valid,
+        }
         snap_match_id = getattr(getattr(snap, "match_meta", None),
                                 "match_id", None)
         snap_match_id = str(snap_match_id) if snap_match_id else None
 
         previous_match_id = self._match_id
+        said = names.replacements(snap.match_meta.player_names, snap.local_seat)
+        # A snapshot that doesn't know the local seat never relabels the listening player.
+        self._said_names = ({**said, **self._said_names} if snap.local_seat is None
+                            else {**self._said_names, **said})
 
         if snap_match_id is not None and previous_match_id is not None \
                 and snap_match_id != previous_match_id:
@@ -406,7 +757,13 @@ class ArenaOnAirApp:
                 removed,
             )
 
+        if getattr(self, "_recap_active", False):
+            # Live play resumed: any unspoken recap lines go stale now.
+            self._recap_active = False
+            self.queue.set_active_match(snap_match_id or self._match_id)
         events = self._events_for(snap, backlog, prev_snap)
+        if self.llm:
+            self.llm.update_read(self.story.read(snap))
         snap_id = getattr(snap, "snapshot_id", None)
 
         # Fast tempo and pruning discipline:
@@ -414,7 +771,7 @@ class ArenaOnAirApp:
         # block, land drop, counter), check if previous speech was not
         # spoken in time.
         tempo = "normal"
-        if not self.once_mode and snap_id != self._last_play_snap_id:
+        if not self.llm and not self.once_mode and snap_id != self._last_play_snap_id:
             has_player_action = any(
                 e.kind in ("cast", "attack_declared", "block_declared",
                            "land_drop", "counter")
@@ -426,17 +783,25 @@ class ArenaOnAirApp:
 
                 if unspoken_plays > 0 or is_busy:
                     tempo = "fast"
-                    pruned = self.queue.prune_plays(self._match_id)
+                    pruned = self.queue.prune_plays(
+                        self._match_id, preserve_public_replies=True,
+                        in_flight_uid=getattr(getattr(self.pump, "current", None), "uid", None))
                     if pruned > 0:
                         logger.info("Fast tempo: pruned %d un-spoken play(s)", pruned)
 
                 self._last_event_time = time.monotonic()
                 self._last_play_snap_id = snap_id
 
+        if self.overlay is not None:
+            self.overlay.update(snap, hole_cards=self.hole_cards)
         for event in events:
+            if self.recorder is not None:
+                self.recorder.observe(event, snap)
             self._handle_event(event, snap,
                                previous_match_id=previous_match_id,
                                tempo=tempo)
+            if not self.llm and event.kind in (ev.GAME_START, ev.TURN_START):
+                self._speak_history_intro(snap)
 
         if snap_match_id is not None \
                 and snap_match_id != self._match_id:
@@ -448,13 +813,19 @@ class ArenaOnAirApp:
 
 
     def _invalidate_analysis(self, snap):
-        # Replies refer to a particular state. They cannot survive a source
-        # loss or a new public state just because their anchor succeeded.
+        if self.llm:
+            self.llm.observe(snap)
+            current = getattr(self.pump, "current", None)
+            if current is not None and not self.llm.valid_for_delivery(current):
+                self.pump.speaker.cancel()
+            return
+        # Current-state analysis expires when its evidence changes. A reply
+        # reacting to a completed public play remains valid across GRE ticks.
         signature = (snap.match_meta.match_id, snap.game_id, snap.gre_state_id,
                      tuple(sorted((seat, k.hand_visible) for seat, k in snap.seat_knowledge.items())))
         if getattr(self, "_analysis_signature", signature) != signature:
-            self.queue.prune_replies()
             old = self._analysis_signature
+            self.queue.prune_replies(state_dependent_only=(old[:2] == signature[:2]))
             if old[:2] != signature[:2] or not set(old[3]) <= set(signature[3]):
                 self.differ._armed_traps.clear()
         self._analysis_signature = signature
@@ -471,6 +842,7 @@ class ArenaOnAirApp:
             snap = self.fusion.publish()
             if snap is None:
                 continue
+            snap = self._private_view(snap)
             self._invalidate_analysis(snap)
             key = (snap.match_meta.match_id, snap.game_id, snap.gre_state_id)
             if self.fusion.public_advanced and key not in self._public_seen:
@@ -489,6 +861,23 @@ class ArenaOnAirApp:
                     self._handle_event(event, snap)
                 self._source_prev = snap
 
+    def _speak_history_intro(self, snap) -> None:
+        """Template booth: one memory line per match once the pairing is known."""
+        if self.recorder is None:
+            return
+        text = self.recorder.history_intro(snap)
+        if not text:
+            return
+        dual = self.booth_mode == "dual"
+        self._seq_history = getattr(self, "_seq_history", 0) + 1
+        utt = Utterance(uid=f"{snap.match_meta.match_id}-history-{self._seq_history}",
+                        match_id=str(snap.match_meta.match_id), kind="history_note", text=text,
+                        salience=ev.SALIENCE_HIGH, ts_created=time.monotonic(),
+                        voice=self.booth["analyst_voice" if dual else "pbp_voice"],
+                        role="color_analyst" if dual else "play_by_play")
+        if self.queue.enqueue(utt):
+            self._last_utterance = text
+
     def _events_for(self, snap, backlog: list, prev_snap) -> list:
         """Diff + story events for one newly published snapshot."""
         events = list(self.differ.diff(prev_snap, snap, backlog))
@@ -497,8 +886,23 @@ class ArenaOnAirApp:
 
     def _handle_event(self, event, snap, previous_match_id=None, tempo="normal") -> None:
         """Gate -> render -> enqueue one event (with end-of-game sealing)."""
+        if self.llm and event.kind == ev.TURN_START:
+            self.llm.turn_started(snap)  # a game-read moment, whatever the verbosity
         if not passes_gate(event, self.config.verbosity):
             return
+        if self.llm:
+            self.queue.set_active_match(snap.match_meta.match_id)
+            self.llm.submit(event, snap)
+            current = getattr(self.pump, "current", None)
+            if current is not None and (not self.llm.valid_for_delivery(current) or
+                    event.salience >= 3 and current.salience < 3):
+                self.pump.speaker.cancel()
+            return
+        if event.salience < ev.SALIENCE_HIGH and event.kind in FOCUS_SKIPS.get(self.config.commentary_focus, ()):
+            return
+        if event.kind == ev.CAST and not event.payload.get("name"):
+            logger.warning("Card name unavailable for public cast: grp_id=%s instance_id=%s",
+                           event.payload.get("grp_id"), event.payload.get("instance_id"))
 
         unspoken_plays = self.queue.play_count(self._match_id)
         is_busy = bool(self.pump and getattr(self.pump, "current", None) is not None)
@@ -519,22 +923,12 @@ class ArenaOnAirApp:
         utt = self.narrator.render(
             event, snap,
             tempo=effective_tempo,
-            excitement=pacing.excitement,
-            rate=pacing.speech_rate,
+            excitement=personas.cap_excitement(self.persona, pacing.excitement),
+            rate=pacing.speech_rate * (self.persona.rate if self.persona else 1.0),
         )
         if utt is None:
             return
         utt = replace(utt, voice=self.booth["pbp_voice"])
-
-        # Dual-booth dialogue (S8.5): after a qualifying PBP anchor renders,
-        # optionally generate its color-analyst companion. The companion is
-        # enqueued right after the anchor and carries anchor_uid so the
-        # SpeechQueue gates its delivery on the anchor's result.
-        companion = self.dialogue.maybe_reply(utt, event, snap) \
-            if getattr(self.dialogue, "enabled", False) else None
-        if companion is not None:
-            utt = replace(utt, dialogue_id=companion.dialogue_id)
-            companion = replace(companion, voice=self.booth["analyst_voice"], expires_ts=time.monotonic() + 15.0)
 
         if event.kind in ("game_end", "match_end"):
             # Closing line first:
@@ -586,10 +980,10 @@ class ArenaOnAirApp:
         if self.queue.enqueue(utt):
             self._last_utterance = utt.text
             self._last_speech_time = time.monotonic()
-            # Companion follows its anchor into the queue (adjacent pair);
-            # delivery ordering/eligibility is enforced by the SpeechQueue.
-            if companion is not None:
-                self.queue.enqueue(companion)
+            if self.booth_mode == "dual":
+                companion = self.analyst.companion(event, snap, utt, voice=self.booth["analyst_voice"])
+                if companion is not None:
+                    self.queue.enqueue(companion)
 
     def _await_delivery(self, utt) -> None:
         """Wait until the pump confirms delivery of ``utt`` (bounded)."""
@@ -623,6 +1017,16 @@ class ArenaOnAirApp:
             "route": self.route,
             "sources": dict(self._source_health),
             "enriched": bool(self.fusion and self.fusion.last_publish_was_enriched),
+            "narration_mode": self.narration_mode,
+            "model": self.llm.status() if self.llm else {"state": "legacy"},
+            "persona": self.persona.name if self.persona else None,
+            "focus": self.config.commentary_focus,
+            "coaching": self.config.coaching,
+            "restart_needed": self.restart_needed(),
+            "hole_cards": self.hole_cards,
+            "overlay": self.overlay.url if self.overlay else None,
+            "warnings": list(self.warnings),
+            "last_recap": self.last_recap,
         }
 
 
@@ -634,6 +1038,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="arenaonair",
         description="Radio-style play-by-play narration for MTG Arena.",
+        epilog="Other commands: arenaonair setup | doctor | recap | build-carddb | install-app  (each takes --help)",
     )
     parser.add_argument("--config", metavar="PATH", default=None,
                         help="TOML config file (default "
@@ -645,6 +1050,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         help="quiet | balanced | detailed")
     parser.add_argument("--voice", metavar="VOICE", default=None,
                         help="TTS voice name (e.g. af_heart, am_adam, bm_george)")
+    parser.add_argument("--speed", type=float, metavar="X", default=None,
+                        help="How fast the casters talk, 0.5-2.0 (default 1.6; 1.0 is the voice's natural pace)")
     parser.add_argument("--list-voices", action="store_true",
                         help="List all available Kokoro default voices and exit")
     parser.add_argument("--dry-run", action="store_true",
@@ -652,6 +1059,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--once", action="store_true",
                         help="Process until the watcher goes idle twice "
                              "consecutively, then exit (CI smoke mode)")
+    ui_flags = parser.add_mutually_exclusive_group()
+    ui_flags.add_argument("--ui", dest="ui", action="store_true", default=None,
+                          help="Open the status window with a Copy bug report button")
+    ui_flags.add_argument("--no-ui", dest="ui", action="store_false",
+                          help="Keep the broadcast in the terminal")
+    parser.add_argument("--narration-mode", choices=("auto", "llm", "legacy"), default=None)
+    parser.add_argument("--llm-base-url", default=None, help="Chat-completions API base including /v1")
+    parser.add_argument("--llm-model", default=None)
+    parser.add_argument("--llm-key-file", default=None, help="Restricted credential file; or use ARENAONAIR_API_KEY")
     # Dual-booth broadcast flags (dual-expansions.md S3.6/S8.7):
     parser.add_argument("--broadcast-mode", choices=("solo", "dual"),
                         default=None,
@@ -663,6 +1079,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         help="Co-caster voice preset (sports_desk, "
                              "mixed_duo, premier_pro_tour, "
                              "academic_tactical)")
+    parser.add_argument("--focus", choices=config_mod.COMMENTARY_FOCUSES, default=None,
+                        help="Balance of play calls and game analysis (default balanced)")
+    parser.add_argument("--coaching", action=argparse.BooleanOptionalAction, default=None,
+                        help="Let the AI booth suggest plays for you (default off)")
     parser.add_argument("--pbp-voice", metavar="VOICE", default=None,
                         help="Override play-by-play voice")
     parser.add_argument("--analyst-voice", metavar="VOICE", default=None,
@@ -676,15 +1096,46 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--relay-listen", metavar="HOST:PORT", default=None,
                         help="Start as a tournament relay receiver "
                              "(e.g. 0.0.0.0:8765)")
+    parser.add_argument("--persona", choices=tuple(personas.PERSONAS), default=None,
+                        help="Booth style: " + ", ".join(p.name for p in personas.PERSONAS.values()))
+    parser.add_argument("--overlay-port", type=int, metavar="PORT", default=None,
+                        help="Serve the OBS browser-source overlay on 127.0.0.1:PORT")
+    parser.add_argument("--stream-delay", type=float, metavar="SECONDS", default=None,
+                        help="Your OBS stream delay; marks this session as streamed")
+    parser.add_argument("--spectator", action="store_true", default=None,
+                        help="With shared logs (--log-player1/2, --relay-listen): the listener is not "
+                             "one of the players, so hands may go on air")
+    parser.add_argument("--hole-cards", choices=("auto", "on", "off"), default=None,
+                        help="Whether the booth may talk about your hand (auto: yes unless "
+                             "streaming with under 30 s delay)")
     return parser
+
+
+#: ``arenaonair <command>`` helpers; anything else is the broadcast itself.
+SUBCOMMANDS = {
+    "doctor": ("doctor", "doctor_main"),
+    "setup": ("doctor", "setup_main"),
+    "recap": ("recap", "main"),
+    "build-carddb": ("build_carddb", "main"),
+    "install-app": ("desktop", "main"),
+}
 
 
 def main(argv=None) -> int:
     """CLI entry point. Returns 0 on success."""
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in SUBCOMMANDS:
+        import importlib
+        module, func = SUBCOMMANDS[argv[0]]
+        return getattr(importlib.import_module(f".{module}", __package__), func)(argv[1:]) or 0
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # The voice engine checks Hugging Face for model updates at startup; those
+    # request lines and the unauthenticated-access notice aren't app problems.
+    for noisy in ("httpx", "huggingface_hub"):
+        logging.getLogger(noisy).setLevel(logging.ERROR)
     args = _build_arg_parser().parse_args(argv)
 
     if args.list_voices:
@@ -698,17 +1149,24 @@ def main(argv=None) -> int:
         print("Usage: python -m arenaonair.app --voice am_adam")
         return 0
 
-    overrides: dict = {}
+    overrides: dict = {k: getattr(args, k) for k in (
+        "narration_mode", "llm_base_url", "llm_model", "llm_key_file") if getattr(args, k) is not None}
     if args.log_path is not None:
         overrides["log_path"] = args.log_path
     if args.verbosity is not None:
         overrides["verbosity"] = args.verbosity
     if args.voice is not None:
         overrides["tts_voice"] = args.voice
+    if args.speed is not None:
+        overrides["speech_speed"] = args.speed
     if args.broadcast_mode is not None:
         overrides["broadcast_mode"] = args.broadcast_mode
     if args.booth_preset is not None:
         overrides["booth_preset"] = args.booth_preset
+    if args.focus is not None:
+        overrides["commentary_focus"] = args.focus
+    if args.coaching is not None:
+        overrides["coaching"] = args.coaching
     if args.pbp_voice is not None:
         overrides["pbp_voice"] = args.pbp_voice
     if args.analyst_voice is not None:
@@ -719,6 +1177,17 @@ def main(argv=None) -> int:
         overrides["log_player2"] = args.log_player2
     if args.relay_listen is not None:
         overrides["relay_bind"] = args.relay_listen
+    if args.persona is not None:
+        overrides["persona"] = args.persona
+    if args.overlay_port is not None:
+        overrides["overlay_port"] = args.overlay_port
+    if args.stream_delay is not None:
+        overrides["stream_enabled"] = True
+        overrides["stream_delay_s"] = args.stream_delay
+    if args.hole_cards is not None:
+        overrides["hole_cards"] = args.hole_cards
+    if args.spectator:
+        overrides["spectator"] = True
 
     cfg = config_mod.load(args.config, **overrides)
 
@@ -740,8 +1209,24 @@ def main(argv=None) -> int:
     app = ArenaOnAirApp(cfg,
                         dry_run=args.dry_run,
                         once_mode=args.once)
+    app.config_path = Path(args.config).expanduser() if args.config else config_mod.DEFAULT_CONFIG_PATH
+    from .diagnostics import BugReportLogs
+    llm = getattr(app, "llm", None)
+    report_logs = BugReportLogs(secrets=(cfg.relay_secret, llm.client.key if llm else None))
+    logging.getLogger().addHandler(report_logs)
+    relaunch = False
     try:
+        import importlib.util
+        want_ui = args.ui is True or (args.ui is None and not args.once and sys.stdout.isatty()
+                                     and importlib.util.find_spec("PySide6") is not None)
+        if args.ui is True and importlib.util.find_spec("PySide6") is None:
+            logger.error("The status window requires the ui extra: pip install -e '.[ui]'")
+            return 1
         app.start()
+        if want_ui:
+            from .ui import run_dashboard
+            relaunch = bool(run_dashboard(app, report_logs))
+            return 0
         while app._watch_thread is not None \
                 and app._watch_thread.is_alive():
             app._watch_thread.join(timeout=0.5)
@@ -751,15 +1236,34 @@ def main(argv=None) -> int:
             # the speech thread is still working through the backlog; give
             # the pump bounded extra time to finish everything enqueued.
             deadline = time.monotonic() + 60.0
-            while (len(app.queue) > 0 or getattr(app.pump, "current", None)
+            while (len(app.queue) > 0 or (app.llm and not app.llm.idle) or getattr(app.pump, "current", None)
                     is not None) and time.monotonic() < deadline:
                 time.sleep(0.01)
     except KeyboardInterrupt:
         pass
     finally:
         app.stop()
+        logging.getLogger().removeHandler(report_logs)
+        report_logs.close()
+        if relaunch:
+            _relaunch()
 
     return 0
+
+
+def _relaunch() -> None:
+    """Start again with the same command so saved settings apply.
+
+    exec keeps the process (and so the macOS Dock tile) rather than starting a
+    second copy. Launch flags come back too, and still override saved settings.
+    """
+    logger.info("relaunching to apply saved settings")
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    os.execv(sys.executable, [sys.executable, *sys.orig_argv[1:]])
 
 
 if __name__ == "__main__":

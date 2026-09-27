@@ -709,3 +709,157 @@ python -m arenaonair.app --broadcast-mode dual --relay-listen 0.0.0.0:8765
 - [ ] All source lifecycle matrix cases pass, with stable player identity and no duplicate public commentary.
 - [ ] Missing card names, incomplete decklists, unsupported rules, and stale private data degrade commentary accurately rather than causing a crash or unsupported certainty.
 - [ ] Dialogue delivery dependencies, actual audio timing, legacy CLI compatibility, and the full regression suite are verified.
+
+## 9. Implementation remediation — September 21, 2026
+
+The follow-up implementation review found that several feature components were
+present but never reached by the running app. The remediation now connects the
+file and relay routes to the same publication and narration pipeline.
+
+- **Application routing:** numbered file slots use independent watchers and the
+  fusion builder; relay mode starts a receiving server and feeds its first client
+  immediately. Either file slot alone works, and a missing partner does not block
+  startup or public commentary. Recorded single-match events are compared between
+  the legacy and numbered-file routes in regression tests.
+- **Booth configuration:** nested `[broadcast]` and `[ingestion]` tables are read.
+  Each configuration layer resolves preset, legacy voice alias, then explicit role
+  overrides. CLI routes replace lower-layer routes; conflicts within one layer
+  remain errors. Dual mode defaults to the sports desk pair.
+- **Voice delivery:** the app assigns role voices and dialogue dependencies,
+  preloads available Kokoro voices, applies the handoff setting, and expires or
+  prunes obsolete replies. Kokoro IDs are stripped before system fallback
+  construction/playback so native engines keep usable voices.
+- **Packaging and startup:** WebSockets is declared as a runtime dependency;
+  Python 3.11+ is declared for `tomllib`. A source-checkout shim resolves the
+  `src/` layout. On this Mac, `python3 -m arenaonair.app` detects Xcode Python 3.9
+  and delegates to `run.sh` and the existing Python 3.12 environment. The optional
+  TTS extra installs the `kokoro` package used by the engine.
+- **Actual private-state fusion:** enrichment copies the owner's private zone
+  memberships, card identities, submitted deck, and commander metadata. Matching
+  requires explicit match/game/GRE state identity, coherent public state, distinct
+  GRE seats, and valid full-baseline/diff continuity. A file slot, receive sequence,
+  or relay connection number never establishes a player seat or game tick.
+- **Degradation and recovery:** losing either source removes that source's private
+  knowledge and selects surviving metadata. Generations reset builders after
+  reconnect/rotation. Replayed older states and retired games cannot rewind the
+  broadcast. A broken diff chain still permits explicit public updates, while
+  private analysis stays disabled until a fresh full baseline. Quiet publication
+  does not refresh the age of private facts.
+- **Knowledge accounting:** hand identity and freshness are checked per seat;
+  missing zone membership is distinct from an explicitly empty zone. Exact library
+  counts require a fully identified library for that player. Submitted-deck
+  subtraction remains an estimate, never a fabricated count reconciled by trimming
+  arbitrary cards or combining both libraries.
+- **Strategic commentary:** trap observations require a fresh visible Counterspell,
+  a matching GRE action offer, and two explicitly untapped Islands in the supported
+  basic-land-only battlefield case. Losing those facts invalidates the observation.
+  Wording describes a possible response, not an already successful counter.
+  Sweepers are counted separately for each seat, with uncertainty and board-effect
+  qualifications. Later enrichment can add supported analysis without replaying
+  public casts, life changes, or story progression.
+- **Relay lifecycle:** receiver timestamps and generations travel with queued
+  lines; reconnects retain source identity and discard old queued generations.
+  Forwarders reconnect even when the log is quiet. The application receiver does
+  not fan out either player's private log to the other connected player.
+
+`tests/test_expansion_integration.py` exercises configuration, booth voice wiring,
+actual private-card copying, single numbered slots, socket ingestion, source loss,
+reconnect generations, game transitions, freshness, incomplete zones, mana checks,
+fallback voice routing, and recorded-match public-event parity. Existing detector
+fixtures now provide the evidence their positive assertions require instead of
+asserting unsupported certainty.
+
+Remaining validation limits are explicit: the repository has single-perspective
+recorded matches, not a paired real-client recording proving cross-client GRE ID
+alignment. Incompatible inputs therefore fall back to one perspective. Bluff
+commentary remains suppressed because active-player changes do not prove a
+priority delay or a bluff. Audible end-to-start handoff latency still requires
+measurement with real audio hardware; scheduler timing and cache tests do not
+establish a 150–250 ms audible result. These limits leave ordinary single-source
+broadcasting and the optional dual booth available.
+
+Validation completed: the full regression run passed 535 tests. After the final
+relay file-generation and truncation changes, all 72 focused ingestion/watcher
+checks passed, including three new regressions. Both recorded-match replay CLI
+checks passed determinism and repetition thresholds. Module launch, direct-file
+launch, and modern-Python direct-file launch all passed `--help` smoke checks.
+The user's subsequent live run also confirmed startup with the Kokoro/say chain;
+its existing process must be restarted to load later changes.
+
+## 10. Live-broadcast follow-up — card names and analyst starvation
+
+The September 21 live dual-booth run exposed two issues that component tests
+missed:
+
+- Every GRE state advance pruned *all* analyst replies, frequently before the PBP
+  anchor finished speaking. Replies now distinguish reactions to completed public
+  plays from analysis that requires fresh state. Public reactions survive routine
+  ticks and fast-tempo pruning while their anchor is playing or has delivered;
+  dependent private/tactical analysis still expires on state changes, and all
+  replies are removed at game boundaries. A delivered anchor's reply receives
+  adjacency priority among equal-salience calls; urgent announcements retain
+  priority. Failed anchors, orphaned replies, and expired replies remain excluded.
+- Two unnamed lands were the back faces of MDFCs: Blackbloom Bog and Malakir Mire.
+  GRE's explicit `othersideGrpId` link now connects the back-face ID to the cached
+  combined card name. There is no guess based on adjacent numerical IDs. Ability
+  object types also survive state reconstruction so triggered/activated abilities
+  disappearing from the stack are not misannounced as generic resolved spells.
+  Fast cast/resolution templates retain known names; an unknown land is described
+  as a land, never a spell.
+
+Delivery logs now show the actual utterance's role, selected voice, and text at
+playback dispatch, making analyst delivery observable without inferring it from
+voice preload messages. `tests/test_live_commentary.py` adds ten regressions,
+including GRE updates and a new cast arriving while the first anchor speaks.
+Replaying the reported match produces named events for all 11 casts, 11 spell
+resolutions, and 11 land entries, removing seven unnamed ability-resolution calls.
+Both cached booth voices generated distinct PCM in an offline synthesis check;
+that check did not play audio or claim an audible handoff latency measurement.
+
+Validation: all 548 tests passed, including the ten live-commentary regressions.
+Both recorded-match replay checks also passed determinism and repetition limits.
+
+## 11. Live follow-up — opening hands, missing printings, and bug reports
+
+September 22: the requested dialogue redesign now targets LLM-generated writing
+for both voices rather than expanded template pools. See
+[the generative booth direction](docs/llm-booth.md) for the new requirements and
+current implementation status.
+
+Opening-hand snapshots now retain the game stage. Topdeck commentary requires
+explicit active play, a positive turn number, and known hand membership;
+pregame/mulligan snapshots and unknown hand contents cannot trigger it.
+
+The unnamed spell in the reported match was Grim Tutor, Arena printing 93987,
+which was absent from the external card cache. Card lookup now falls back to an
+installed Arena card database opened read-only. Missing or unsupported databases
+still degrade gracefully; existing external-cache hits retain precedence.
+
+A small optional desktop window now shows recent logs and a **Copy bug report**
+button. Reports include recent app/commentary logs, voice configuration, queue
+and source status, and game-stage diagnostics. Known secrets, private-game
+commentary, and raw game payloads are omitted. Reports stay local until pasted.
+With the UI extra installed, ordinary interactive launches open the window;
+`--ui` explicitly requests it and `--no-ui` keeps terminal-only operation. The
+buffer starts with the new process and cannot recover earlier terminal output.
+
+The live booth review identified a lack of actual conversation, repetitive
+unsupported approval, excessive cast/resolution replies, anonymous short calls,
+and issues with grammar and tone. Proposed improvements included handoffs,
+factual callbacks, airtime limits, and acceptance criteria. **That broader dialogue
+redesign remains recommended work, not an implemented part of these fixes.**
+
+Validation: all 565 tests passed, including native database fallback, pregame
+stage transitions, report redaction, the real Qt clipboard-button path, and CLI
+window lifecycle wiring. An offscreen visual check confirmed the window layout.
+
+
+## 12. Generative booth implementation — September 22, 2026
+
+The generative direction supersedes the template-only narration requirement above.
+One shared asynchronous writer and evidence auditor now produce both roles, with
+confirmed-delivery memory and dependency-gated speech. Legacy PBP remains an
+explicit mode; the unfinished scripted analyst draft is removed. Existing source
+fusion and voice routing remain in place. See [runtime/setup](docs/llm-booth.md)
+and [validation](docs/llm-booth-validation.md) for the measured result and quality
+limitations; older test totals in this document describe older trees.

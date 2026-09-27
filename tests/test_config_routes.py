@@ -25,20 +25,22 @@ from arenaonair.config import (
 # Legacy defaults
 # ---------------------------------------------------------------------------
 
-def test_default_config_is_legacy_compatible():
+def test_default_config_is_a_two_caster_single_log_booth():
     cfg = Config()
-    assert cfg.broadcast_mode == "solo"
+    assert cfg.broadcast_mode == "dual"
     assert cfg.ingestion_mode == "single"
     assert cfg.log_player1 is None and cfg.log_player2 is None
     assert cfg.relay_bind is None
     assert resolve_route(cfg)["route"] == "auto"
     booth = resolve_booth(cfg)
-    assert booth["mode"] == "solo"
-    assert booth["pbp_voice"] is None
+    assert booth["mode"] == "dual"
+    assert booth["preset"] == "sports_desk"
+    # One caster remains available explicitly.
+    assert resolve_booth(Config(broadcast_mode="solo"))["pbp_voice"] is None
 
 
 def test_legacy_voice_alias_maps_to_pbp_in_solo():
-    cfg = Config(tts_voice="am_adam")
+    cfg = Config(tts_voice="am_adam", broadcast_mode="solo")
     booth = resolve_booth(cfg)
     assert booth["mode"] == "solo"
     assert booth["pbp_voice"] == "am_adam"
@@ -130,7 +132,7 @@ def test_legacy_alias_used_when_no_preset_and_no_role_override():
     cfg = Config(broadcast_mode="dual", tts_voice="bm_george")
     booth = resolve_booth(cfg)
     assert booth["pbp_voice"] == "bm_george"
-    assert booth["analyst_voice"] is None
+    assert booth["analyst_voice"] == "am_onyx"
 
 
 def test_explicit_pbp_override_beats_legacy_alias():

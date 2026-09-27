@@ -3,7 +3,7 @@
 MTGA GRE messages identify cards only by numeric ``grpId`` (with names as
 numeric localization ids), which is useless for narration until mapped to real
 card data.  Scryfall publishes bulk data whose ``arena_id`` field equals the
-MTGA grpId on most cards; :mod:`arenaonair.tools.build_carddb` builds a local
+MTGA grpId on most cards; :mod:`arenaonair.build_carddb` builds a local
 SQLite cache from that data and this module reads it.
 
 The cache lives outside the repo (default ``~/.cache/arenaonair/cards.sqlite``)
@@ -15,10 +15,11 @@ per missing id.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sqlite3
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable, Optional, Tuple
 
@@ -58,6 +59,7 @@ class CardInfo:
     type_line: str
     mana_cost: str
     card_types: Tuple[str, ...]
+    oracle_text: str = ""
 
 
 def _csv_to_tuple(csv: str) -> Tuple[str, ...]:
@@ -234,6 +236,27 @@ def is_combat_trick(name: str) -> bool:
     return any(k in low for k in ("growth", "rage", "strength", "safekeeping", "escape", "stand"))
 
 
+def installed_arena_databases() -> list[Path]:
+    """Known Steam/Epic/direct-install roots; never scan a user's whole disk."""
+    home = Path.home()
+    roots = [
+        home / "Library/Application Support/Steam/steamapps/common/MTGA",
+        Path("/Users/Shared/Epic Games/MagicTheGathering"),
+        home / ".steam/steam/steamapps/common/MTGA",
+        home / ".local/share/Steam/steamapps/common/MTGA",
+        Path(os.environ.get("PROGRAMFILES(X86)", "C:/Program Files (x86)")) / "Steam/steamapps/common/MTGA",
+        Path(os.environ.get("PROGRAMFILES", "C:/Program Files")) / "Wizards of the Coast/MTGA",
+        Path(os.environ.get("PROGRAMFILES", "C:/Program Files")) / "Epic Games/MagicTheGathering",
+    ]
+    found = []
+    for root in roots:
+        try:
+            found.extend((root / "MTGA_Data/Downloads/Raw").glob("Raw_CardDatabase_*.mtga"))
+        except OSError:
+            continue
+    return sorted(found, key=lambda p: p.stat().st_mtime, reverse=True)
+
+
 class CardDb:
     """Read-only accessor over the locally built card cache.
 
@@ -242,13 +265,28 @@ class CardDb:
     lock keeps cursor use serialized across narrator/reader threads.
     """
 
-    def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
+    def __init__(self, db_path: str | Path = DEFAULT_DB_PATH, *, arena_db_path: str | Path | None = None) -> None:
         self._path = Path(db_path)
         self._lock = threading.RLock()
         self._conn: Optional[sqlite3.Connection] = None
         self._missing_logged: set[int] = set()
         self._missing_warned_no_db = False
         self._open()
+        self._arena_conn = None
+        candidates = [Path(arena_db_path)] if arena_db_path is not None else (
+            installed_arena_databases() if self._path == DEFAULT_DB_PATH else [])
+        for candidate in candidates:
+            conn = None
+            try:
+                conn = sqlite3.connect(candidate.resolve().as_uri() + "?mode=ro", uri=True, check_same_thread=False)
+                conn.execute("SELECT GrpId, TitleId, TypeTextId, SubtypeTextId, OldSchoolManaText FROM Cards LIMIT 0")
+                conn.execute("SELECT LocId, Loc, Formatted FROM Localizations_enUS LIMIT 0")
+                self._arena_conn = conn
+                logger.info("CardDb: installed Arena database enabled for cache misses")
+                break
+            except (sqlite3.Error, OSError):
+                if conn is not None:
+                    conn.close()
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -265,13 +303,14 @@ class CardDb:
             self._warn_missing_db_once()
             return
         self._conn = conn
+        self._has_oracle = "oracle_text" in {r[1] for r in conn.execute("PRAGMA table_info(cards)")}
 
     def _warn_missing_db_once(self) -> None:
         if not self._missing_warned_no_db:
             self._missing_warned_no_db = True
             logger.debug(
-                "CardDb: no usable cache at %s; lookups will return None "
-                "(build one with python -m tools.build_carddb)",
+                "CardDb: no usable external cache at %s; trying installed Arena data "
+                "(build one with: arenaonair build-carddb)",
                 self._path,
             )
 
@@ -280,6 +319,31 @@ class CardDb:
             if self._conn is not None:
                 self._conn.close()
                 self._conn = None
+            if self._arena_conn is not None:
+                self._arena_conn.close()
+                self._arena_conn = None
+
+    def _arena_lookup(self, grp_id):
+        conn = self._arena_conn
+        if conn is None:
+            return None
+        try:
+            row = conn.execute("SELECT TitleId, TypeTextId, SubtypeTextId, OldSchoolManaText FROM Cards WHERE GrpId=?", (grp_id,)).fetchone()
+            if row is None:
+                return None
+            def localized(loc_id):
+                result = conn.execute("SELECT Loc FROM Localizations_enUS WHERE LocId=? ORDER BY Formatted LIMIT 1", (loc_id,)).fetchone()
+                return re.sub(r"<[^>]+>", "", result[0]) if result else ""
+            name, head, subtypes = (localized(loc_id) for loc_id in row[:3])
+            if not name:
+                return None
+            raw_cost = row[3] or ""
+            symbols = re.findall(r"o([0-9]+|[WUBRGCXYZS])", raw_cost)
+            cost = "".join("{" + symbol + "}" for symbol in symbols) if "".join("o" + symbol for symbol in symbols) == raw_cost else ""
+            types = tuple(t for t in head.split() if t.lower() in {"artifact", "battle", "creature", "enchantment", "instant", "land", "planeswalker", "sorcery", "kindred", "tribal"})
+            return CardInfo(name, head + (" — " + subtypes if subtypes else ""), cost, types)
+        except sqlite3.Error:
+            return None
 
     # -- queries -----------------------------------------------------------
 
@@ -288,28 +352,34 @@ class CardDb:
         if not isinstance(grp_id, int) or isinstance(grp_id, bool):
             return None
         with self._lock:
-            conn = self._conn
-            if conn is None:
+            row = None
+            if self._conn is not None:
+                try:
+                    row = self._conn.execute(
+                        "SELECT name, type_line, mana_cost, card_types, " + ("oracle_text" if self._has_oracle else "''") + " FROM cards WHERE arena_id = ?",
+                        (grp_id,),
+                    ).fetchone()
+                except sqlite3.Error as exc:
+                    logger.warning("CardDb: lookup failed for %s: %s", grp_id, exc)
+            if row is None:
+                native = self._arena_lookup(grp_id)
+                if native is not None:
+                    if self._conn is not None and self._has_oracle:
+                        # Exact card name only: never infer rules from a similar
+                        # printing name or an adjacent Arena ID.
+                        rules = self._conn.execute("SELECT oracle_text FROM cards WHERE name=? AND oracle_text != '' LIMIT 1", (native.name,)).fetchone()
+                        if rules:
+                            native = replace(native, oracle_text=rules[0])
+                    return native
                 self._log_missing(grp_id)
                 return None
-            try:
-                row = conn.execute(
-                    "SELECT name, type_line, mana_cost, card_types "
-                    "FROM cards WHERE arena_id = ?",
-                    (grp_id,),
-                ).fetchone()
-            except sqlite3.Error as exc:
-                logger.warning("CardDb: lookup failed for %s: %s", grp_id, exc)
-                return None
-        if row is None:
-            self._log_missing(grp_id)
-            return None
-        name, type_line, mana_cost, card_types_csv = row
+        name, type_line, mana_cost, card_types_csv, oracle_text = row
         return CardInfo(
             name=name,
             type_line=type_line,
             mana_cost=mana_cost,
             card_types=_csv_to_tuple(card_types_csv),
+            oracle_text=oracle_text or "",
         )
 
     def counts(self) -> Tuple[int, int]:

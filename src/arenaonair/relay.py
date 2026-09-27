@@ -75,7 +75,7 @@ except ImportError as _exc:  # pragma: no cover - deployment guard
         f"underlying import error: {_exc}"
     ) from _exc
 
-from .watcher import LogWatcher
+from .watcher import LogWatcher, MultiLogWatcher
 
 __all__ = ["RelayServer", "RelayForwarder", "_BACKEND"]
 
@@ -91,11 +91,13 @@ class RelayServer:
     secret every connection is admitted immediately.
     """
 
-    def __init__(self, bind_host: str, port: int, secret: str = "") -> None:
+    def __init__(self, bind_host: str, port: int, secret: str = "", *, on_line=None, on_disconnect=None) -> None:
 
         self._bind_host = bind_host
         self._port = int(port)
         self._secret = secret
+        self.on_line = on_line
+        self.on_disconnect = on_disconnect
 
         self._server = None                 # websockets Server object
         self._next_conn_id = 0              # monotonic connection id source
@@ -213,6 +215,10 @@ class RelayServer:
                     continue  # undecodable junk: drop silently
                 if not isinstance(frame, dict):
                     continue
+                if self.on_line is not None:
+                    if frame.get("type") == "log" and isinstance(frame.get("line"), str):
+                        self.on_line(conn_id, frame)
+                    continue  # player clients must not receive opponents' logs
                 # Fan out to EVERY connected peer (including the sender --
                 # loopback lets a forwarder verify its own path cheaply),
                 # stamped with the originating CONNECTION id.
@@ -230,6 +236,8 @@ class RelayServer:
             pass  # any transport hiccup ends this connection's loop quietly
         finally:
             self._clients.pop(conn_id, None)
+            if self.on_disconnect:
+                self.on_disconnect(conn_id)
 
 
 class RelayForwarder:
@@ -259,6 +267,11 @@ class RelayForwarder:
         self._reconnect_delay_s = reconnect_delay_s
         self._poll_interval = poll_interval
 
+        import uuid
+        import socket
+        from pathlib import Path
+        identity = socket.gethostname() + ":" + str(Path(log_path).expanduser().resolve() if log_path else "default")
+        self.client_id = str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
         self.session_gen = 0               # bumped on every reconnect attempt cycle
         self.sent_count = 0
 
@@ -302,7 +315,19 @@ class RelayForwarder:
                                                     self._reconnect_delay_s))
                             continue
 
-                    await self._pump(ws)
+                    # Drain server control frames so receive backpressure can
+                    # never stop an otherwise healthy forwarder.
+                    async def drain():
+                        async for _ in ws:
+                            pass
+                    reader = asyncio.create_task(drain())
+                    sender = asyncio.create_task(self._pump(ws))
+                    try:
+                        await asyncio.wait((reader, sender), return_when=asyncio.FIRST_COMPLETED)
+                    finally:
+                        reader.cancel()
+                        sender.cancel()
+                        await asyncio.gather(reader, sender, return_exceptions=True)
 
             except (_WsConnectionClosed, _WsInvalidStatus, OSError,
                     asyncio.TimeoutError, Exception):
@@ -321,14 +346,16 @@ class RelayForwarder:
 
     async def _pump(self, ws) -> None:
 
-        watcher = LogWatcher(path=self._log_path, anchor=False)
+        watcher = MultiLogWatcher([LogWatcher(path=self._log_path).path], anchor=False)
         try:
             while not self._stop_evt.is_set():
                 batch = watcher.poll()
-                for _ts, line in batch:
+                for sid, _ts, line in batch:
                     frame = {
                         "type": "log",
                         "line": line,
+                        "client_id": self.client_id,
+                        "log_generation": watcher.generations[sid],
                         # Informational only; never used for ordering/seats.
                         "ts_client_wallclock": time.time(),
                     }
@@ -340,14 +367,121 @@ class RelayForwarder:
             watcher.close()
 
 
-async def _demo() -> None:  # pragma: no cover - manual smoke helper
+class RelayLogSource:
+    """Threaded websocket receiver exposing the same poll surface as files."""
+    def __init__(self, bind, *, secret=""):
+        import queue
+        import threading
+        host, port = bind.rsplit(":", 1)
+        self._host, self._port, self._secret = host, int(port), secret
+        self._lines = queue.Queue(maxsize=8192)
+        self._ready = threading.Event()
+        self._stop = threading.Event()
+        self._error = None
+        self._thread = None
+        self._clients = {}
+        self._connections = {}
+        self._current = {}
+        self._log_generations = {}
+        self.generations = {}
+        self.source_health = {}
+        self.server = None
 
-    server = RelayServer("127.0.0.1", 0)
-    await server.start()
-    print(f"relay demo on :{server.port} backend={server.backend}")
-    await server.close()
+    def _receive(self, conn_id, frame):
+        import queue
+        identity = str(frame.get("client_id") or f"connection-{conn_id}")
+        if identity not in self._clients:
+            available = next((s for s in self._clients.values()
+                              if not self.source_health.get(s, False)), None)
+            if len(self._clients) >= 2:
+                if available is None:
+                    return
+                self._clients = {k: v for k, v in self._clients.items() if v != available}
+                self._clients[identity] = available
+            else:
+                self._clients[identity] = len(self._clients)
+        sid = self._clients[identity]
+        if conn_id < self._current.get(sid, -1):
+            return
+        if self._current.get(sid) != conn_id:
+            self._current[sid] = conn_id
+            self.generations[sid] = self.generations.get(sid, -1) + 1
+            self._log_generations[sid] = frame.get("log_generation", 0)
+        log_generation = frame.get("log_generation", 0)
+        if self._log_generations.get(sid) != log_generation:
+            self._log_generations[sid] = log_generation
+            self.generations[sid] += 1
+        self._connections[conn_id] = sid
+        self.source_health[sid] = True
+        try:
+            self._lines.put_nowait((sid, self.generations[sid], time.monotonic(), frame["line"]))
+        except queue.Full:
+            # Dropping a line breaks continuity: force rebootstrap instead of
+            # presenting subsequent diffs as a complete state.
+            self.source_health[sid] = False
+            self.generations[sid] += 1
+
+    def _disconnected(self, conn_id):
+        sid = self._connections.get(conn_id)
+        if sid is not None and self._current.get(sid) == conn_id:
+            self.source_health[sid] = False
+
+    def start(self):
+        import threading
+        self._thread = threading.Thread(target=lambda: asyncio.run(self._run()), daemon=True)
+        self._thread.start()
+        if not self._ready.wait(5):
+            raise RuntimeError("relay startup timed out")
+        if self._error:
+            raise self._error
+
+    async def _run(self):
+        try:
+            self.server = RelayServer(self._host, self._port, self._secret,
+                                      on_line=self._receive, on_disconnect=self._disconnected)
+            await self.server.start()
+            self._ready.set()
+            while not self._stop.is_set():
+                await asyncio.sleep(0.02)
+        except Exception as exc:
+            self._error = exc
+            self._ready.set()
+        finally:
+            if self.server:
+                await self.server.close()
+
+    def poll(self):
+        import queue
+        out = []
+        while True:
+            try:
+                sid, gen, ts, line = self._lines.get_nowait()
+            except queue.Empty:
+                return out
+            if gen == self.generations.get(sid):
+                out.append((sid, gen, ts, line))
+
+    def close(self):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=5)
 
 
-if __name__ == "__main__":  # pragma: no cover
+def main(argv=None):
+    import argparse
+    parser = argparse.ArgumentParser(description="Forward a Player.log to the ArenaOnAir relay")
+    parser.add_argument("--connect", required=True, metavar="HOST:PORT")
+    parser.add_argument("--log-path")
+    parser.add_argument("--secret", default="")
+    parser.add_argument("--seat", type=int, help="Informational only; GRE metadata establishes the seat")
+    args = parser.parse_args(argv)
+    forwarder = RelayForwarder(args.connect, args.log_path, secret=args.secret)
+    try:
+        asyncio.run(forwarder.run())
+    except KeyboardInterrupt:
+        return 0
+    return 0
 
-    asyncio.run(_demo())
+
+if __name__ == "__main__":
+    raise SystemExit(main())

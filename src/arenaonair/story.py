@@ -82,6 +82,64 @@ DEFAULT_THRESHOLDS: dict[str, float] = {
 }
 
 
+#: The game read reports each seat's life change over this many turns
+#: (both players' turns count, as Arena numbers them).
+READ_RECENT_TURNS = 4
+
+#: Game-read shapes. Unlike the arcs above (tuned for scripted lines), each is
+#: defined only by numbers the read itself reports, so a fact-check can verify it.
+READ_THRESHOLDS = {
+    "life_edge": 6,        # life lead that counts as clearly ahead
+    "race_loss": 5,        # recent life lost by BOTH players for a race
+    "comeback_margin": 4,  # how much more recent life the leader lost for a comeback
+    "standoff_power": 4,   # creature power EACH player needs for a standoff...
+    "standoff_quiet": 2,   # ...while neither lost more than this recently
+}
+SHAPE_MEANINGS = {
+    "race": ("Both players are under pressure: each has lost at least {race_loss} life over the "
+             "recent turns, or each one's creature power already matches the other's life."),
+    "comeback_brewing": ("The player fighting back trails on life by at least {life_edge}, but over the "
+                         "recent turns the leader has lost at least {comeback_margin} more life than them."),
+    "pulling_away": ("The player ahead leads on life by at least {life_edge} and has lost no more life "
+                     "than the opponent over the recent turns."),
+    "standoff": ("Both players have at least {standoff_power} creature power out and neither has lost "
+                 "more than {standoff_quiet} life over the recent turns."),
+    "even": "Neither player has a clear edge on life or recent pressure.",
+}
+
+READ_MEANING = (
+    "Computed from public state only; an assessment of the current position, not a prediction, "
+    "a player's plan or hidden information. creature_power totals every creature on the "
+    "battlefield, including any that cannot attack yet. power_at_least_opponent_life compares "
+    "that total with the opponent's life. "
+    "life_change_recent is the change over the last recent_turns turns, both players' turns counted. "
+    "turns_without_new_land counts that player's own turns in a row with no new land.")
+
+
+def _read_shape(players: list[dict[str, Any]]) -> dict[str, Any]:
+    """Shape of the game from a read's own numbers (see SHAPE_MEANINGS)."""
+    th = READ_THRESHOLDS
+    a, b = players
+    lost = {p["seat"]: -min(0, p["life_change_recent"]) for p in players if "life_change_recent" in p}
+    shape, who = "even", None
+    if all(p["power_at_least_opponent_life"] for p in players) or (
+            len(lost) == 2 and min(lost.values()) >= th["race_loss"]):
+        shape = "race"
+    elif isinstance(a["life"], int) and isinstance(b["life"], int) and abs(a["life"] - b["life"]) >= th["life_edge"]:
+        high, low = (a, b) if a["life"] > b["life"] else (b, a)
+        if len(lost) == 2 and lost[high["seat"]] - lost[low["seat"]] >= th["comeback_margin"]:
+            shape, who = "comeback_brewing", ("fighting_back", low)
+        elif len(lost) < 2 or lost[high["seat"]] <= lost[low["seat"]]:
+            shape, who = "pulling_away", ("ahead", high)
+    elif (len(lost) == 2 and max(lost.values()) <= th["standoff_quiet"]
+          and min(p["creature_power"] for p in players) >= th["standoff_power"]):
+        shape = "standoff"
+    out: dict[str, Any] = {"shape": shape, "shape_meaning": SHAPE_MEANINGS[shape].format(**th)}
+    if who:
+        out[who[0]] = {"seat": who[1]["seat"], "name": who[1]["name"]}
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Pure helpers operating on snapshots (tolerant of odd data)
 # ---------------------------------------------------------------------------
@@ -207,6 +265,8 @@ def _hand_sizes(state: GameState) -> dict[int | None, int]:
     try:
         for zone in state.zones.values():
             if _norm_type(getattr(zone, "zone_type", "")) != "hand":
+                continue
+            if not getattr(zone, "membership_known", True):
                 continue
             owner = getattr(zone, "owner_seat", None)
             ids = getattr(zone, "object_ids", ()) or ()
@@ -377,6 +437,12 @@ class StoryModel:
 
         # clash-of-outs ([O3]): one event per internal turn
         self._clash_fired_turn: int | None = None
+        self._clash_seats = set()
+
+        # game read: each seat's own turns in a row without a new land, and
+        # every seat's life at the start of the last few turns
+        self._missed_land_turns: dict[int | None, int] = {}
+        self._turn_lives: deque[dict[Any, int | None]] = deque(maxlen=READ_RECENT_TURNS + 1)
 
         # Scope isolation (S7.6): narrative state must not bleed across
         # matches or games.
@@ -403,7 +469,10 @@ class StoryModel:
         self._below_low_since = {}
         self._outs_fired_turn = None
         self._clash_fired_turn = None
+        self._clash_seats = set()
         self._topdeck_fired_turns = {}
+        self._missed_land_turns = {}
+        self._turn_lives.clear()
         if hasattr(self, "_prev_land_iids"):
             self._prev_land_iids = {}
         if hasattr(self, "_prev_bf_refs"):
@@ -448,7 +517,57 @@ class StoryModel:
         except Exception:
             return []
 
+    def read(self, state: GameState) -> dict[str, Any] | None:
+        """The current read of the game from public state, as plain data.
+
+        Call it with the snapshot just passed to :meth:`update`. Gives the
+        shape of the game with what it means, and per player: life, life
+        change over the last few turns, creatures and their total power,
+        lands, hand size and own turns in a row without a new land. Hands,
+        decks and plans stay unknown. None before play starts.
+        """
+        try:
+            return self._read(state)
+        except Exception:
+            return None
+
     # -- internals ----------------------------------------------------------
+
+    def _read(self, state: GameState) -> dict[str, Any] | None:
+        if not self._first_update_done or state.game_stage not in (None, "GameStage_Play"):
+            return None
+        seats = _known_seats(state)
+        if len(seats) != 2:
+            return None
+        lives = _lives(state)
+        bf = _battlefield_refs(state)
+        creatures = _group_by_controller(bf, _of_type(bf, "creature"))
+        lands = _group_by_controller(bf, _of_type(bf, "land"))
+        hands = _hand_sizes(state)
+        names = dict(getattr(state.match_meta, "player_names", None) or {})
+        then = self._turn_lives[0] if len(self._turn_lives) == self._turn_lives.maxlen else None
+        players = []
+        for seat in seats:
+            life = lives.get(seat)
+            opp_life = lives.get(next(s for s in seats if s != seat))
+            power = _power_total(creatures.get(seat) or [])
+            row: dict[str, Any] = {
+                "seat": seat, "name": names.get(seat), "life": life,
+                "creatures": len(creatures.get(seat) or []), "creature_power": power,
+                "power_at_least_opponent_life": isinstance(opp_life, int) and 0 < power >= opp_life,
+                "lands": len(lands.get(seat) or []),
+                "turns_without_new_land": self._missed_land_turns.get(seat, 0),
+            }
+            if isinstance(hands.get(seat), int):
+                row["cards_in_hand"] = hands[seat]
+            if then is not None and isinstance(life, int) and isinstance(then.get(seat), int):
+                row["life_change_recent"] = life - then[seat]
+            players.append(row)
+        read: dict[str, Any] = {"players": players, "meaning": READ_MEANING}
+        if all("life_change_recent" in p for p in players):
+            read["recent_turns"] = READ_RECENT_TURNS
+        read.update(_read_shape(players))
+        return read
 
     def _get_card_info(self, grp_id):
         if not grp_id:
@@ -546,10 +665,15 @@ class StoryModel:
         # Scope isolation FIRST: a new match or a restarted game begins with
         # clean narrative books (S7.6).
         self._ensure_narrative_scope(state)
+        # Opening hands are transient during Start/mulligans. Do not treat
+        # those snapshots (or a completed game) as in-game strategic evidence.
+        if state.game_stage is not None and state.game_stage != "GameStage_Play":
+            return []
 
         active = getattr(getattr(state, "turn_info", None), "active_player", None)
         if active != self._last_active:
             self._advance_turn(active)
+            self._turn_lives.append(_lives(state))
 
         candidates: list[tuple[int, Event]] = []
 
@@ -605,76 +729,41 @@ class StoryModel:
             return False
 
     def _fold_clash_of_outs(self, state: GameState, ts: float) -> list[Event]:
-        """Answer-count pressure readout, honest under partial knowledge.
-
-        - Seats are analyzed INDIVIDUALLY: only seats whose own SeatKnowledge
-          qualifies (accounted + exact + deck submitted) appear at all.
-        - ``remaining_deck_cards`` output is respected -- its ``uncertain``
-          marker downgrades every claim to hedged wording with NO counts.
-        - Numeric ``seat_a_outs``/``seat_b_outs`` extras appear ONLY when
-          BOTH seats qualify exactly AND the accounting marker is clean.
-          (remaining_deck_cards exposes the one reconciled pool this receiver
-          can prove; under double-exact knowledge that verified total is the
-          published figure for both seats.)
-        - Single-source mode therefore yields one-sided hedged text without
-          cross-seat comparison numbers; no supported seat at all -> silence.
-        """
-        try:
-            if self._clash_fired_turn == self._turn:
-                return []
-
-            seats = [s for s in _known_seats(state)]
-            if len(seats) < 2:
-                return []
-
-            supported = [s for s in seats
-                         if self._seat_outs_supported(state, s)]
-            if not supported:
-                # Nothing backed by current knowledge -> emit nothing rather
-                # than speculate (conservative SUPPRESS).
-                return []
-
-            rem = remaining_deck_cards(state)
-            rem_uncertain = (not rem) or bool(getattr(rem,
-                                                      "uncertain",
-                                                      False))
-            total = None
-            if not rem_uncertain:
-                total = sum(cnt for cnt in rem.values() if cnt > 0)
-
-            both_exact = len(supported) >= 2 and not rem_uncertain
-
-            if both_exact:
-                seat_a, seat_b = sorted(supported)[:2]
-                pressure_desc = (
-                    f"verified accounting leaves {total} candidate outs; "
-                    f"seats {seat_a} and {seat_b} are both fully accounted")
-                payload: dict[str, Any] = {"pressure_desc": pressure_desc}
-                payload["seat_a_outs"] = total
-                payload["seat_b_outs"] = total
-            elif total is not None:
-                # Single-source with clean accounting: state ONLY what the
-                # supported seat's own proof covers; hedge the rest.
-                fragments = [f"seat {s} has {total} candidate outs left"
-                             for s in sorted(supported)]
-                pressure_desc = "; ".join(fragments) + (
-                    "; answers may still be hiding")
-                payload = {"pressure_desc": pressure_desc}
-            else:
-                # Accounting uncertain -> hedged wording, zero counts.
-                fragments = [f"seat {s} is digging for answers"
-                             for s in sorted(supported)]
-                pressure_desc = "; ".join(fragments) + (
-                    "; answers may still be hiding")
-                payload = {"pressure_desc": pressure_desc}
-
-            self._clash_fired_turn = self._turn
-            return [_event(ev.CLASH_OF_OUTS, None, payload, ts)]
-        except Exception:
+        """Report candidate sweeper draws independently, never guaranteed outs."""
+        supported_seats = {seat for seat, sk in state.seat_knowledge.items() if sk.deck_submitted}
+        if self._clash_fired_turn == self._turn and supported_seats <= self._clash_seats:
             return []
+        if not any(p.life is not None and p.life <= 5 for p in state.players.values()):
+            return []
+        descriptions, counts = [], {}
+        for seat, sk in sorted(state.seat_knowledge.items()):
+            if not sk.deck_submitted:
+                continue
+            rem = remaining_deck_cards(state, seat)
+            sweepers = [(gid, count) for gid, count in rem.items() if count > 0 and
+                        (info := self._get_card_info(gid)) and is_sweeper(info.name)]
+            if not sweepers:
+                continue
+            if getattr(rem, "uncertain", True) or not self._seat_outs_supported(state, seat):
+                descriptions.append(f"seat {seat}'s submitted deck includes potential sweepers; the remaining count is uncertain")
+            else:
+                count = sum(n for _, n in sweepers)
+                counts[seat] = count
+                descriptions.append(f"seat {seat} has {count} potential sweeper draws in {sum(rem.values())} cards")
+        if not descriptions:
+            return []
+        payload = {"pressure_desc": "; ".join(descriptions) + "; their effectiveness depends on the board",
+                   "candidate_sweepers_by_seat": counts}
+        self._clash_fired_turn = self._turn
+        self._clash_seats = supported_seats
+        return [_event(ev.CLASH_OF_OUTS, None, payload, ts)]
 
     def _fold_topdeck_mode(self, state: GameState, ts: float) -> list[Event]:
         try:
+            turn = state.turn_info.turn_number
+            if (state.game_stage != "GameStage_Play" or
+                    not isinstance(turn, int) or isinstance(turn, bool) or turn < 1):
+                return []
             active = getattr(getattr(state, "turn_info", None), "active_player", None)
             if active is None:
                 active = getattr(state, "local_seat", None)
@@ -725,6 +814,8 @@ class StoryModel:
             else:
                 ledger.land_free_streak = 0
                 ledger.screw_fired = False
+            if seat == self._last_active:
+                self._missed_land_turns[seat] = 0 if lands else self._missed_land_turns.get(seat, 0) + 1
             ledger.lands_added_this_turn = 0
 
         self._turn += 1

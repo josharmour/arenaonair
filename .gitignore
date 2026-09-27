@@ -2,3 +2,12 @@
 __pycache__/
 *.egg-info/
 .pytest_cache/
+.DS_Store
+dist/
+build/
+.wrangler/
+.env
+.env.*
+*.key
+# Local recordings and review artifacts can include player information.
+recordings/

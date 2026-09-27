@@ -133,8 +133,8 @@ def connect_resp_msg(local_seat):
 def full_state_msg(life_a=20, life_b=23):
     return GreMessage(
         kind="gre.GameStateMessage",
-        payload={"type": "GameStateType_Full",
-                 "zones": [],
+        payload={"type": "GameStateType_Full", "gameStateId": 1,
+                 "gameInfo": {"gameNumber": 1}, "zones": [],
                  "players": [
                      {"systemSeatNumber": 1, "lifeTotal": life_a},
                      {"systemSeatNumber": 2, "lifeTotal": life_b}]},

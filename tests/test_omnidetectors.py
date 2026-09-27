@@ -8,6 +8,8 @@ unmet, and every fired payload must contain only evidence-backed facts.
 
 from __future__ import annotations
 
+from dataclasses import replace
+from arenaonair.carddb import CardInfo
 from arenaonair import events as ev
 from arenaonair.differ import EventDiffer
 from arenaonair.models import (
@@ -38,6 +40,7 @@ def card(iid, types=("creature",), ctrl=1, name=None, grp_id=None):
         toughness=None,
         controller_seat=ctrl,
         owner_seat=ctrl,
+        is_tapped=False,
     )
 
 
@@ -53,7 +56,7 @@ def make_state(snapshot_id, hands=None, lands=None, active_player=1,
     for seat, n in lands.items():
         for i in range(n):
             iid = seat * 100 + i
-            objects[iid] = card(iid, ("land",), seat)
+            objects[iid] = card(iid, ("land",), seat, name="Island")
             bf_ids.append(iid)
 
     for seat, cards in hands.items():
@@ -85,6 +88,7 @@ def make_state(snapshot_id, hands=None, lands=None, active_player=1,
         match_meta=MatchMeta(match_id=match_id, format_name="Brawl_Ladder"),
         local_seat=None,
         seat_knowledge=knowledge or {},
+        legal_actions={seat: tuple(seat * 1000 + i for i in range(len(cards))) for seat, cards in hands.items()},
     )
 
 
@@ -213,7 +217,7 @@ class TestTrapSprung:
         d.diff(prev0, armed_state, [])
 
         # Next window: seat 2 publicly casts a spell.
-        sprung_state = make_state(6, active_player=2)
+        sprung_state = replace(armed_state, snapshot_id=6, legal_actions={})
         msg = cast_action_msg(777, seat=2)
         events = d.diff(armed_state, sprung_state, [msg])
         return d, armed_state, sprung_state, events
@@ -277,17 +281,10 @@ class TestBluff:
             knowledge={2: sk(2, hand_fresh_asof=FRESH_AT_5)},
         )
 
-    def test_positive_qualified_wording_from_real_cards(self):
+    def test_active_player_change_is_not_evidence_of_bluff(self):
         d = EventDiffer()
-        prev = make_state(1)  # active player was 1 -> delay evidence for 2
-        events = d.diff(prev, self._bluff_cur(), [])
-        bluffs = of_kind(events, ev.BLUFF_DETECTED)
-        assert len(bluffs) == 1
-        summary = bluffs[0].payload["visible_hand_summary"]
-        # Summary built from the ACTUAL visible cards only.
-        assert "Counterspell" in summary
-        assert "Negate" in summary
-        assert "the hand we can see holds" in summary
+        events = d.diff(make_state(1), self._bluff_cur(), [])
+        assert of_kind(events, ev.BLUFF_DETECTED) == []
 
     def test_suppressed_when_no_delay_evidence(self):
         d = EventDiffer()
@@ -359,7 +356,7 @@ def story_state(snapshot_id, knowledge=None, deck=(101, 102), spent_iids=()):
     for seat in (1, 2):
         for i in range(2):
             iid = seat * 100 + i
-            objects[iid] = card(iid, ("land",), seat)
+            objects[iid] = card(iid, ("land",), seat, name="Island")
             bf_ids.append(iid)
     for n, iid in enumerate(spent_iids):
         objects[iid] = CardRef(
@@ -378,7 +375,14 @@ def story_state(snapshot_id, knowledge=None, deck=(101, 102), spent_iids=()):
         zones["hand:1"] = ZoneView(
             zone_id=11, zone_type="ZoneType_Hand", owner_seat=1,
             object_ids=tuple(spent_iids))
-    players = {seat: PlayerView(seat=seat, life=20) for seat in (1, 2)}
+    players = {seat: PlayerView(seat=seat, life=4) for seat in (1, 2)}
+    # Independent fully identified libraries: two sweepers for seat 1,
+    # one for seat 2. Other cards must not be counted as potential answers.
+    for seat, gids in ((1, (101, 101, 999)), (2, (102, 999))):
+        ids = tuple(seat * 10000 + i for i in range(len(gids)))
+        zones[f"library:{seat}"] = ZoneView(20 + seat, "library", seat, ids)
+        for iid, gid in zip(ids, gids):
+            objects[iid] = card(iid, ctrl=seat, grp_id=gid)
     return GameState(
         snapshot_id=snapshot_id,
         prev_snapshot_id=None if snapshot_id <= 1 else snapshot_id - 1,
@@ -390,8 +394,14 @@ def story_state(snapshot_id, knowledge=None, deck=(101, 102), spent_iids=()):
                              format_name="Brawl_Ladder"),
         local_seat=1,
         player_deck=tuple(deck),
+        player_decks={1: (101, 101, 999), 2: (102, 999)},
         seat_knowledge=knowledge or {},
     )
+
+
+def sweeper_lookup(gid):
+    return {101: CardInfo("Sunfall", "Sorcery", "{3}{W}{W}", ("sorcery",)), 102: CardInfo("Farewell", "Sorcery", "{4}{W}{W}", ("sorcery",)),
+            999: CardInfo("Island", "Basic Land", "", ("land",))}.get(gid)
 
 
 class TestClashOfOuts:
@@ -405,7 +415,7 @@ class TestClashOfOuts:
         }
 
     def test_double_exact_includes_numeric_extras(self):
-        sm = StoryModel()
+        sm = StoryModel(card_lookup=sweeper_lookup)
         state = story_state(1, knowledge=self._both_exact_knowledge(),
                             spent_iids=(500,))
         events = sm.update(state)
@@ -413,16 +423,16 @@ class TestClashOfOuts:
         assert len(clashes) == 1
         payload = clashes[0].payload
         assert "pressure_desc" in payload
-        assert isinstance(payload["seat_a_outs"], int)
-        assert isinstance(payload["seat_b_outs"], int)
+        assert payload["candidate_sweepers_by_seat"] == {1: 2, 2: 1}
 
     def test_single_source_hedged_text_without_numerics(self):
-        sm = StoryModel()
+        sm = StoryModel(card_lookup=sweeper_lookup)
         knowledge = {
             1: sk(1, deck_submitted=True, library_accounted=True,
                   library_uncertainty="exact"),
         }
         state = story_state(1, knowledge=knowledge)
+        state = replace(state, zones={k: v for k, v in state.zones.items() if not k.startswith("library")})
         events = sm.update(state)
         clashes = of_kind(events, ev.CLASH_OF_OUTS)
         assert len(clashes) == 1
@@ -430,10 +440,10 @@ class TestClashOfOuts:
         assert "seat_a_outs" not in payload
         assert "seat_b_outs" not in payload
         desc = payload["pressure_desc"]
-        assert "answers may still be hiding" in desc
+        assert "remaining count is uncertain" in desc
 
     def test_uncertain_marker_omits_numerics_everywhere(self):
-        sm = StoryModel()
+        sm = StoryModel(card_lookup=sweeper_lookup)
         knowledge = self._both_exact_knowledge()
         # Degraded zone rosters -> remaining_deck_cards flags 'uncertain';
         # even with both seats' SK exact the numerics must be omitted.
@@ -445,22 +455,23 @@ class TestClashOfOuts:
             payload = clashes[0].payload
             assert "seat_a_outs" not in payload
             assert "seat_b_outs" not in payload
-            assert "answers may still be hiding" in payload["pressure_desc"]
+            assert "remaining count is uncertain" in payload["pressure_desc"]
 
     def test_no_supported_seat_emits_nothing(self):
-        sm = StoryModel()
+        sm = StoryModel(card_lookup=sweeper_lookup)
         state = story_state(1)  # empty seat_knowledge -> nobody qualifies
         events = sm.update(state)
         assert of_kind(events, ev.CLASH_OF_OUTS) == []
 
     def test_estimated_uncertainty_downgrades_to_hedged(self):
-        sm = StoryModel()
+        sm = StoryModel(card_lookup=sweeper_lookup)
         knowledge = {
             1: sk(1, deck_submitted=True, library_accounted=True,
                   library_uncertainty="estimated"),
             2: sk(2),
         }
         state = story_state(1, knowledge=knowledge)
+        state = replace(state, zones={k: v for k, v in state.zones.items() if not k.startswith("library")})
         events = sm.update(state)
         clashes = of_kind(events, ev.CLASH_OF_OUTS)
         for clash in clashes:
@@ -468,7 +479,7 @@ class TestClashOfOuts:
             assert "seat_b_outs" not in clash.payload
 
     def test_single_source_does_not_crash_on_odd_snapshots(self):
-        sm = StoryModel()
+        sm = StoryModel(card_lookup=sweeper_lookup)
         state = story_state(1, knowledge={
             1: sk(1, deck_submitted=True, library_accounted=True,
                   library_uncertainty="exact")})
@@ -493,6 +504,6 @@ class TestRobustness:
                                     payload={"nonsense": True}, ts=0)])
         assert isinstance(events, list)
 
-        sm = StoryModel()
+        sm = StoryModel(card_lookup=sweeper_lookup)
         events2 = sm.update(None)
         assert events2 == []

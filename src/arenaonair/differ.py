@@ -526,12 +526,17 @@ class EventDiffer:
                 ref_cur = (cur.objects or {}).get(iid)
                 ref_prev = (prev.objects or {}).get(iid) if prev else None
                 ref = ref_cur if ref_cur is not None else ref_prev
+                # Triggered/activated ability objects share the stack with
+                # spells. Their disappearance must not become "a spell resolves".
+                if "ability" in (getattr(ref, "object_type", None) or "").lower():
+                    continue
                 name = getattr(ref, "name", None) if ref is not None else None
                 seat = getattr(ref, "controller_seat", None) \
                     if ref is not None else None
                 actor = counter_evidence.get(iid)
                 if dest == "graveyard" and actor is not None:
-                    payload = {"name": name}
+                    payload = {"name": name, "instance_id": iid, "grp_id": getattr(ref, "grp_id", None),
+                               "counter_evidence": actor.get("evidence")}
                     if actor.get("by_seat") is not None:
                         payload["countered_by_seat"] = actor["by_seat"]
                     if actor.get("by_name"):
@@ -594,7 +599,9 @@ class EventDiffer:
                                         if prev else None))
                     if affector_ref is not None:
                         by_name = getattr(affector_ref, "name", None)
-                    evidence[iid] = {"by_seat": affector, "by_name": by_name}
+                    by_seat = (getattr(affector_ref, "controller_seat", None) if affector_ref is not None
+                               else affector if affector in cur.players else None)
+                    evidence[iid] = {"by_seat": by_seat, "by_name": by_name, "evidence": "annotation"}
 
             # 2. Counterspell present on the previous stack.
             if len(evidence) < len(gone_ids):
@@ -610,7 +617,7 @@ class EventDiffer:
                         if victim in evidence:
                             continue
                         evidence[victim] = {"by_seat": controller,
-                                            "by_name": name}
+                                            "by_name": name, "evidence": "stack_inference"}
         except Exception:
             return evidence
         return evidence
@@ -638,6 +645,7 @@ class EventDiffer:
         try:
             msgs = self._window_msgs
             attackers_out = []
+            confirmed_attackers = set()
             seen_iids = set()
 
             for msg in msgs:
@@ -684,6 +692,8 @@ class EventDiffer:
                                           "attackstate_attacking"):
                         continue
                     iid2 = _as_int(go.get("instanceId"))
+                    if iid2 is not None:
+                        confirmed_attackers.add(iid2)
                     if iid2 is None or iid2 in seen_iids:
                         continue
                     seen_iids.add(iid2)
@@ -714,6 +724,7 @@ class EventDiffer:
             return [Event(kind=ev.ATTACK_DECLARED,
                           seat=None,
                           payload={"attackers": attackers_out,
+                                   "confirmed_instance_ids": sorted(confirmed_attackers),
                                    "total_power": payload_total_power},
                           ts=ts_base,
                           salience=ev.SALIENCE_HIGH)]
@@ -725,6 +736,7 @@ class EventDiffer:
         try:
             msgs = self._window_msgs
             blocks_out = []
+            confirmed_blockers = set()
             seen_blockers = set()
 
             for msg in msgs:
@@ -768,6 +780,8 @@ class EventDiffer:
                                           "blockstate_blocking"):
                         continue
                     bid2 = _as_int(go.get("instanceId"))
+                    if bid2 is not None:
+                        confirmed_blockers.add(bid2)
                     if bid2 is None or bid2 in seen_blockers:
                         continue
                     seen_blockers.add(bid2)
@@ -786,7 +800,7 @@ class EventDiffer:
             ts_base = getattr(cur, "ts", 0.0) or 0.0
             return [Event(kind=ev.BLOCK_DECLARED,
                           seat=None,
-                          payload={"blocks": blocks_out},
+                          payload={"blocks": blocks_out, "confirmed_instance_ids": sorted(confirmed_blockers)},
                           ts=ts_base,
                           salience=ev.SALIENCE_HIGH)]
         except Exception:
@@ -1576,7 +1590,7 @@ class EventDiffer:
     def _clock(self, state):
         """Receiver ts when present, else float(snapshot_id) stand-in."""
         try:
-            ts = getattr(state, "ts", None)
+            ts = getattr(state, "received_at", None)
             if isinstance(ts, (int, float)) and not isinstance(ts, bool):
                 return float(ts)
             return float(getattr(state, "snapshot_id", 0) or 0)
@@ -1713,195 +1727,64 @@ class EventDiffer:
             return out
         return out
 
-    def detect_trap_armed(self, prev, cur):
-        """ARMED: fresh visible hand holds a reactive card behind known mana.
-
-        Prerequisites (each independently required; ANY miss -> []):
-        - target seat's hand_visible AND hand_fresh_asof within tolerance;
-        - mana KNOWN for that seat from visible battlefield lands
-          (< trap_min_lands visible lands == unknown -> SUPPRESS);
-        - a reactive card actually sits in the visible hand;
-        - no live armed entry already registered for that seat.
+    def _ready_counter(self, state, seat, *, require_offer=True):
+        """Bounded supported case: a GRE-offered Counterspell, payable from
+        two explicitly untapped Islands on a battlefield of basic lands.
+        Unknown costs, mana sources, modifiers, or timing suppress the read.
         """
-        try:
-            clock = self._clock(cur)
-            tol = self.cfg.get("trap_hand_fresh_tolerance", 5.0)
-            min_lands = int(self.cfg.get("trap_min_lands", 1))
-            out = []
-            ts_base = getattr(cur, "ts", 0.0) or 0.0
+        sk = self._seat_knowledge(state, seat)
+        if not self._hand_fresh(sk, self._clock(state), self.cfg["trap_hand_fresh_tolerance"]):
+            return None
+        allowed = state.legal_actions.get(seat, ())
+        lands = []
+        basics = {"Island", "Plains", "Swamp", "Mountain", "Forest", "Wastes"}
+        for iid in _zone_object_ids(state, "battlefield"):
+            ref = state.objects.get(iid)
+            if ref is None or ref.name not in basics:
+                return None
+            if ref.controller_seat == seat and ref.name == "Island" and ref.is_tapped is False:
+                lands.append(ref)
+        if len(lands) < 2:
+            return None
+        return next((r for r in self._visible_hand_refs(state, seat)
+                     if r.name == "Counterspell" and (not require_offer or r.instance_id in allowed)), None)
 
-            knowledge = getattr(cur, "seat_knowledge", None) or {}
-            for seat in sorted(knowledge):
-                sk = knowledge.get(seat)
-                if sk is None:
-                    continue
-                if not self._hand_fresh(sk, clock, tol):
-                    continue  # stale/invisible hand -> suppress entirely
-                lands_seen = self._known_mana_lands(cur, seat)
-                if lands_seen < min_lands:
-                    continue  # mana unknown -> conservative SUPPRESS
-                # Already armed? one live trap per seat per game.
-                existing = self._armed_traps.get(seat)
-                if existing is not None:
-                    # Lazily expire stale entries so they never refire.
-                    if clock - existing["armed_clock"] \
-                            > float(self.cfg.get("trap_validity_window",
-                                                 30.0)):
-                        self._armed_traps.pop(seat, None)
-                    else:
-                        continue
-
-                threat_name = None
-                threat_grp = None
-                for ref in self._visible_hand_refs(cur, seat):
-                    name = getattr(ref, "name", None)
-                    if name and is_counterspell(name):
-                        threat_name = name
-                        threat_grp = getattr(ref, "grp_id", None)
-                        break
-                if threat_name is None:
-                    continue  # nothing reactive visibly held -> no claim
-
-                self._armed_traps[seat] = {
-                    "threat_name": threat_name,
-                    "grp_id": threat_grp,
-                    "armed_clock": clock,
-                }
-                out.append(Event(
-                    kind=ev.TRAP_ARMED,
-                    seat=seat,
-                    payload={"seat": seat, "threat_name": threat_name},
-                    ts=ts_base,
-                    salience=ev.SALIENCE_LOW))
-            return out
-        except Exception:
+    def detect_trap_armed(self, prev, cur):
+        if cur is None:
             return []
+        out = []
+        for seat in cur.seat_knowledge:
+            ref = self._ready_counter(cur, seat)
+            if ref is None:
+                if self._ready_counter(cur, seat, require_offer=False) is None:
+                    self._armed_traps.pop(seat, None)
+                continue
+            if seat in self._armed_traps:
+                continue
+            self._armed_traps[seat] = {"iid": ref.instance_id, "armed_clock": self._clock(cur)}
+            out.append(Event(ev.TRAP_ARMED, seat, {"seat": seat, "threat_name": ref.name}, self._clock(cur), ev.SALIENCE_LOW))
+        return out
 
     def detect_trap_sprung(self, prev, cur):
-        """SPRUNG: a public cast walks into a LIVE armed trap in-window.
-
-        Requires an armed registry entry whose validity window still covers
-        the cast; matching clears the entry so stale traps never refire.
-        """
-        try:
-            if not self._armed_traps:
-                return []
-            clock = self._clock(cur)
-            window = float(self.cfg.get("trap_validity_window", 30.0))
-
-            # Expire dead entries first.
-            for seat in sorted(list(self._armed_traps)):
-                entry = self._armed_traps.get(seat)
-                if entry is not None and clock - entry["armed_clock"] > window:
-                    self._armed_traps.pop(seat, None)
-
-            casts = self._public_casts_this_window(prev, cur)
-            if not casts:
-                return []
-
-            out = []
-            ts_base = getattr(cur, "ts", 0.0) or 0.0
-            idx = 0
-            for trap_seat in sorted(list(self._armed_traps)):
-                entry = self._armed_traps[trap_seat]
-                for cast in casts:
-                    caster = cast.get("seat")
-                    if caster is None or caster == trap_seat:
-                        continue  # own cast never springs own trap
-                    victim_name = cast.get("name")
-                    self._armed_traps.pop(trap_seat, None)  # clear: no refire
-                    out.append(Event(
-                        kind=ev.TRAP_SPRUNG,
-                        seat=caster,
-                        payload={"victim_name": victim_name},
-                        ts=ts_base + idx * 0.01,
-                        salience=ev.SALIENCE_HIGH))
-                    idx += 1
-                    break  # one spring per armed entry per window
-            return out
-        except Exception:
+        if cur is None:
             return []
+        out = []
+        for seat, entry in list(self._armed_traps.items()):
+            ref = self._ready_counter(cur, seat, require_offer=False)
+            if ref is None or ref.instance_id != entry["iid"] or self._clock(cur) - entry["armed_clock"] > self.cfg["trap_validity_window"]:
+                self._armed_traps.pop(seat, None)
+                continue
+            for cast in self._public_casts_this_window(prev, cur):
+                if cast.get("seat") is not None and cast["seat"] != seat:
+                    out.append(Event(ev.TRAP_SPRUNG, cast["seat"], {"victim_name": cast.get("name") or "a spell"}, self._clock(cur), ev.SALIENCE_HIGH))
+                    self._armed_traps.pop(seat, None)
+                    break
+        return out
 
     def detect_bluff(self, prev, cur):
-        """Qualified priority-delay observation from VERIFIED facts only.
-
-        Fires ONLY when ALL hold:
-        - the seat's hand is visible AND fresh (own tolerance gate);
-        - mana is known from visible battlefield lands;
-        - verified delay evidence: the active player CHANGED to this seat this
-          window (they demonstrably received priority) AND they publicly cast
-          nothing this window;
-        - the visible hand actually holds a reactive card.
-        Payload carries ONLY a template-facing summary string built from the
-        REAL visible cards -- never an outright intent assertion.
-        """
-        try:
-            clock = self._clock(cur)
-            tol = self.cfg.get("bluff_hand_fresh_tolerance", 5.0)
-
-            active_now = getattr(getattr(cur, "turn_info", None),
-                                 "active_player", None)
-            active_before = (getattr(getattr(prev, "turn_info", None),
-                                     "active_player", None)
-                             if prev else None)
-            delay_evidence = (active_now is not None
-                              and active_now != active_before)
-
-            casts_by_me: set[int | None] = set()
-            for cast in self._public_casts_this_window(prev, cur):
-                casts_by_me.add(cast.get("seat"))
-
-            knowledge = getattr(cur, "seat_knowledge", None) or {}
-            out = []
-            ts_base = getattr(cur, "ts", 0.0) or 0.0
-            idx = 0
-            for seat in sorted(knowledge):
-                sk = knowledge.get(seat)
-                if sk is None:
-                    continue
-                if not self._hand_fresh(sk, clock, tol):
-                    continue  # invisible/stale hand -> suppress entirely
-                if not delay_evidence or active_now != seat:
-                    continue  # no verified priority delay -> suppress
-                if seat in casts_by_me:
-                    continue  # they acted; no delay to explain
-                if self._known_mana_lands(cur, seat) < 1:
-                    continue  # mana unknown -> suppress
-
-                held_names: list[str] = []
-                reactive_seen = False
-                for ref in self._visible_hand_refs(cur, seat):
-                    name = getattr(ref, "name", None)
-                    if not name:
-                        continue  # summary uses REAL cards only
-                    held_names.append(name)
-                    if is_counterspell(name):
-                        reactive_seen = True
-                if not reactive_seen or not held_names:
-                    continue
-
-                counts: dict[str, int] = {}
-                for name in held_names:
-                    counts[name] = counts.get(name, 0) + 1
-                parts = []
-                for name in sorted(counts):
-                    n = counts[name]
-                    word = {2: "two", 3: "three", 4: "four",
-                            5: "five"}.get(n)
-                    parts.append(f"{word} {name}s" if word and n > 1
-                                 else f"{n} {name}" if n > 1 else name)
-                summary = ("the hand we can see holds "
-                           + ", ".join(parts))
-                out.append(Event(
-                    kind=ev.BLUFF_DETECTED,
-                    seat=seat,
-                    payload={"visible_hand_summary": summary},
-                    ts=ts_base + idx * 0.01,
-                    salience=ev.SALIENCE_LOW))
-                idx += 1
-            return out
-        except Exception:
-            return []
+        # No verified priority-duration signal exists in the current GRE
+        # contract. An active-player change is not evidence of a bluff.
+        return []
 
     # ------------------------------------------------------- debounce / merge
 

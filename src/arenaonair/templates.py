@@ -475,33 +475,21 @@ TEMPLATE_POOLS = {
     # --- Omniscient-strategic detector kinds (payload contracts honored) -----
 
     ev.TRAP_ARMED: [
-        # THREAT-FIRST ({seat}/{threat_name} tolerated via getattr-style slots)
-        "Trap status: armed{threat_clause}{seat_clause}.",
-        # WARN-FORWARD
-        "Heads-up broadcast -- a reactive piece waits in that hand{threat_clause}.",
-        # ASIDE
-        "Something is cocked and loaded over there{threat_clause}.",
-        # COLOR (drama)
-        "Quiet hand, loud intentions -- that grip smells like a trap.",
-        # STAT-FWD (mana-behind framing)
-        "Mana behind it and a receiver ready -- the ambush is staged.",
-        # CONSEQUENCE-FIRST
-        "Anyone casting into that hand had better be ready to lose a spell.",
+        "Response watch{threat_clause}{seat_clause}; two untapped Islands are available.",
+        "A visible Counterspell joins two open Islands{seat_clause}.",
+        "Mana is available for the Counterspell in that hand.",
+        "Quiet board, possible interaction: Counterspell is visible with blue mana available.",
+        "The hand holds a potential response{threat_clause}{seat_clause}.",
+        "Two Islands remain untapped beside that visible Counterspell.",
     ],
 
     ev.TRAP_SPRUNG: [
-        # VICTIM-FIRST ({victim_name} tolerated)
-        "There it is -- the trap springs shut{victim_clause}!",
-        # CONSEQUENCE-FIRST
-        "Walked right into it -- that cast pays the toll.",
-        # ASIDE (lean sting)
-        "Snap! Ambush executed exactly as advertised.",
-        # COLOR (payoff framing)
-        "The armed trap cashes in -- patience rewarded in full.",
-        # DRAMA
-        "Oh no, right into the teeth of it -- brutal spot.",
-        # PAYOFF-STAT
-        "Predicted it, delivered it -- that hand was loaded all along.",
+        "A spell arrives{victim_clause}; Counterspell remains visible in the opposing hand.",
+        "Interaction watch: that cast faces a possible Counterspell response.",
+        "Open blue mana, visible Counterspell -- the response is still to come.",
+        "The cast is public; the opposing Counterspell is still in hand.",
+        "Potential interaction here{victim_clause}; no counter has resolved yet.",
+        "That visible Counterspell could matter now{victim_clause}.",
     ],
 
     ev.BLUFF_DETECTED: [
@@ -584,18 +572,18 @@ TEMPLATE_SHORT_POOLS = {
     ev.CAST: [
         "{card}.",
         "{actor} casts {card}.",
-        "Spell on the stack.",
+        "On the stack: {card}.",
         "{gloss}.",
         "{card} incoming.",
         "Casting {card}.",
     ],
     ev.RESOLVE: [
-        "Resolves.",
+        "Resolved: {card}.",
         "{card} lands.",
-        "No answer.",
-        "Through.",
+        "Through goes {card}.",
+        "It resolves -- {card}.",
         "{card} sticks.",
-        "Effect goes live.",
+        "Taking effect: {card}.",
     ],
     ev.COUNTER: [
         "Countered!",
@@ -694,12 +682,12 @@ TEMPLATE_SHORT_POOLS = {
         "Mana curve shattered.",
     ],
     ev.TRAP_SPRUNG: [
-        "Trap sprung!",
-        "Right into it.",
-        "Ambush lands.",
-        "Sprung{victim_clause}!",
-        "Patience pays.",
-        "Loaded hand cashes in.",
+        "Possible Counterspell response.",
+        "Interaction watch{victim_clause}.",
+        "Counterspell still in hand.",
+        "Open blue mana; response pending.",
+        "That cast meets a possible response.",
+        "The visible counter could matter.",
     ],
     ev.CLASH_OF_OUTS: [
         "Outs clash{pressure_clause}.",
@@ -1054,86 +1042,7 @@ def shape_signature(text):
         return ""
 
 
-# ---------------------------------------------------------------------------
-# Dual-booth analyst companion pools (dual-expansions.md S3.x)
-#
-# Keyed by analyst category (NOT event kind): DialogueSequencer classifies a
-# qualifying PBP anchor event into one category deterministically and renders
-# ONE companion line from here with role='color_analyst'. Same variety rules
-# as every other pool: >= 6 structurally distinct shapes per category,
-# announcer-not-coach wording throughout (analyze drama/math; never instruct).
-# ---------------------------------------------------------------------------
-
-ANALYST_AGREE_POOL = [
-    # READ-ECHO variant
-    "Exactly the read I had -- textbook execution right there.",
-    # ENDORSEMENT variant
-    "Agreed on every count -- that line plays out just as advertised.",
-    # PERCENTAGE variant
-    "That is the percentage play -- no notes from this booth.",
-    # NUMBERS-BACK variant
-    "Clean call all around -- the numbers back it every step.",
-    # NOD variant
-    "Nodding along over here -- nothing worth second-guessing.",
-    # VALUE variant
-    "Sharp sequencing -- full value extracted from that spot.",
-]
-
-ANALYST_DOUBT_POOL = [
-    # HEDGE variant
-    "Not so sure about that one -- plenty of openings left behind.",
-    # SKEPTIC variant
-    "Color me skeptical -- that math feels optimistic at best.",
-    # TIMING variant
-    "Timing looks shaky -- one answer wider and this flips fast.",
-    # INSURANCE variant
-    "Bold without backup -- I would want insurance before feeling safe.",
-    # WINDOW variant
-    "Leaves a window open -- opponents live to punish exactly that.",
-    # COST variant
-    "Questionable price tag -- that is a lot paid for uncertain gain.",
-]
-
-ANALYST_TACTICAL_POOL = [
-    # RESOURCE-MATH variant
-    "Resource ledger says {actor} just banked real advantage there.",
-    # TEMPO variant
-    "Pure tempo transaction -- {actor} traded permanence for pace.",
-    # TRADE variant
-    "One-for-one on paper, but {actor} wins the exchange rate.",
-    # POSITION variant
-    "Position over polish -- {actor} quietly improved the whole board.",
-    # THREAT-LEDGER variant
-    "Threat ledger updates -- {actor} now holds the bigger stick.",
-    # MANA-EFFICIENCY variant
-    "Mana efficiency on display -- {actor} spent less to affect more.",
-]
-
-ANALYST_EXCLAMATION_POOL = [
-    # SWING variant
-    "What a swing! The whole complexion of this game just changed.",
-    # COUNTER-DRAMA variant
-    "Are you kidding me?! Nobody saw that coming from this angle.",
-    # LIFE-SWING variant
-    "Look at those life totals! This race is officially on fire.",
-    # UNREAL variant
-    "Absolutely unreal -- that is highlight-reel material right there.",
-    # STAKES variant
-    "The stakes just skyrocketed -- buckle up for the aftermath!",
-    # GASPS variant
-    "Wow -- just wow. That line deserves a slow-motion replay.",
-]
-
-#: Category name -> pool registry consumed by narrator.DialogueSequencer.
-ANALYST_POOLS = {
-    "agree": ANALYST_AGREE_POOL,
-    "doubt": ANALYST_DOUBT_POOL,
-    "tactical": ANALYST_TACTICAL_POOL,
-    "exclamation": ANALYST_EXCLAMATION_POOL,
-}
-# "no template twice within any rolling window of 8" is satisfiable.
-# ---------------------------------------------------------------------------
-
+# Retained legacy PBP variety; never used by the generative booth.
 _EXTRA_FULL = {
     ev.MATCH_START: [
         "The booth is set -- {actor} and {opp} about to throw down.",

@@ -134,12 +134,19 @@ class Narrator:
 
         active_pool = short_pool if family == "short" else pool
 
-        # --- history-weighted selection --------------------------------------
-        idx = self._pick_index(kind, family, active_pool)
-        template = active_pool[idx]
-
         # --- slot filling -----------------------------------------------------
         slots = self._build_slots(event, state)
+        # Never voice a placeholder name ("our player versus our player"):
+        # prefer templates that don't need a player we can't name yet.
+        unnamed = slots.pop("_unnamed", ())
+        needs_name = {i for i, t in enumerate(active_pool)
+                      if any("{" + slot + "}" in t for slot in unnamed)}
+        if len(needs_name) == len(active_pool):
+            needs_name = set()
+
+        # --- history-weighted selection --------------------------------------
+        idx = self._pick_index(kind, family, active_pool, exclude=needs_name or None)
+        template = active_pool[idx]
         text = self._safe_format(template, slots)
         if not text or not text.strip():
             return None
@@ -148,7 +155,7 @@ class Narrator:
         # utterance's shape and an alternate exists, rotate once.
         shape = tpl.shape_signature(text)
         if shape == self._last_shape and len(active_pool) > 1:
-            tried = {idx}
+            tried = {idx} | needs_name
             for _attempt in range(3):
                 if len(tried) >= len(active_pool):
                     break
@@ -226,8 +233,11 @@ class Narrator:
                 candidates = [i for i in range(n)
                               if i not in set(recent[-1:])]
             if exclude:
-                filtered = [i for i in candidates if i not in exclude]
-                candidates = filtered or list(range(n))
+                # Exclusions (e.g. templates needing an unknown name) outrank
+                # the variety window.
+                candidates = ([i for i in candidates if i not in exclude]
+                              or [i for i in range(n) if i not in exclude]
+                              or list(range(n)))
 
         weights = []
         for i in candidates:
@@ -269,15 +279,25 @@ class Narrator:
         kind = getattr(event, "kind", "")
 
         seat = getattr(event, "seat", None)
+        if seat is None:
+            # Ambient events (match/game start): the local player first, then
+            # the opponent, taken from the match's player list.
+            seat, opp_seat = self._pairing_seats(state)
+        else:
+            opp_seat = self._other_seat(seat, state)
         actor_slot = self._actor_name(seat, state)
-        opp_seat = self._other_seat(seat, state)
         opp_slot = self._actor_name(opp_seat, state)
 
         slots["actor"] = actor_slot
         slots["opp"] = opp_slot
+        slots["_unnamed"] = tuple(slot for slot, s in (("actor", seat), ("opp", opp_seat))
+                                  if not self._has_name(s, state))
 
         name_val = payload.get("name") or payload.get("cast_name")
-        slots["card"] = str(name_val) if name_val else "a spell"
+        ref = self._object_ref(payload.get("instance_id"), state)
+        name_val = name_val or getattr(ref, "name", None)
+        fallback = "a land" if kind == ev.LAND_DROP else "a spell"
+        slots["card"] = str(name_val) if name_val else fallback
 
         names_list = payload.get("names")
         
@@ -710,6 +730,30 @@ class Narrator:
             pass
         return f"seat {seat}" if seat is not None else "our player"
 
+    def _has_name(self, seat, state):
+        try:
+            names = getattr(getattr(state, "match_meta", None), "player_names", None) or {}
+            if seat is not None and names.get(seat):
+                return True
+            local_seat = getattr(state, "local_seat", None)
+            return bool(seat is not None and local_seat is not None
+                        and int(seat) == int(local_seat) and self.local_name)
+        except Exception:
+            return False
+
+    def _pairing_seats(self, state):
+        try:
+            names = getattr(getattr(state, "match_meta", None), "player_names", None) or {}
+            seats = sorted({s for s in list(names) + list(getattr(state, "players", {}) or {})
+                            if isinstance(s, int)})
+            local = getattr(state, "local_seat", None)
+            if local in seats:
+                seats.remove(local)
+                seats.insert(0, local)
+            return (seats + [None, None])[0], (seats + [None, None])[1]
+        except Exception:
+            return None, None
+
     def _other_seat(self, seat, state):
         try:
             seats = sorted((getattr(state, "players", {}) or {}).keys())
@@ -847,243 +891,3 @@ class Narrator:
                 return str(template)
             except Exception:
                 return ""
-
-
-# ---------------------------------------------------------------------------
-# Dual-booth dialogue sequencer (dual-expansions.md S3.2)
-# ---------------------------------------------------------------------------
-
-#: Event kinds that always qualify as anchor milestones regardless of salience.
-DEFAULT_MILESTONE_KINDS = frozenset({
-    ev.COUNTER,
-    ev.COMBAT_DAMAGE,
-    ev.LIFE_CHANGE,
-    ev.UNFAIR_PLAY,
-})
-
-#: Payload substrings that read as dramatic swings -> EXCLAMATION / DOUBT.
-_SWING_TOKENS = ("counter", "swing", "lethal", "damage")
-
-#: Payload keys/substrings that read as removal/resource transactions ->
-#: TACTICAL.
-_TACTICAL_KEYS = ("removal", "destroy", "exile", "sacrifice", "sac",
-                  "land", "mana", "draw", "recursion")
-
-
-def classify_analyst_category(event) -> str:
-    """Deterministic sentiment/tactics heuristic over one anchor event.
-
-    Order of precedence (first match wins):
-      1. counter / life-swing drama  -> exclamation
-      2. removal / resource transaction -> tactical
-      3. explicit doubt markers (bold-but-unbacked reads) -> doubt
-      4. default endorsement -> agree
-    Never raises; unknown payloads degrade to 'agree'.
-    """
-    try:
-        kind = str(getattr(event, "kind", "") or "")
-        payload = getattr(event, "payload", {}) or {}
-        blob_parts = [kind]
-        for key in ("reason", "detail", "name", "cast_name"):
-            val = payload.get(key)
-            if val:
-                blob_parts.append(str(val))
-        blob = " ".join(blob_parts).lower()
-
-        # 1. Drama: counters and life swings are booth-exclamation fuel.
-        if kind == ev.COUNTER or any(tok in blob for tok in _SWING_TOKENS):
-            return "exclamation"
-
-        # 2. Tactics: removal spells and resource transactions.
-        if any(tok in blob for tok in _TACTICAL_KEYS):
-            return "tactical"
-
-        # 3. Doubt: bold moves flagged by the differ as risky/unbacked.
-        risk_val = payload.get("risk") or payload.get("risky")
-        if risk_val or "gamble" in blob or "all-in" in blob:
-            return "doubt"
-
-        # 4. Default: clean execution earns agreement.
-        return "agree"
-    except Exception:
-        return "agree"
-
-
-class DialogueSequencer:
-    """Generates ONE color-analyst companion utterance per qualifying anchor.
-
-    Qualification: the anchor event's salience >= SALIENCE_HIGH, or its kind
-    sits in ``milestone_kinds`` (configurable). The companion shares the
-    anchor's match_id/kind lineage and carries dialogue_id='dlg-<anchor.uid>'
-    plus anchor_uid=<anchor.uid> so the speech pump can gate its delivery on
-    the anchor's DeliveryResult.
-
-    Single-log by construction: every input (event payload, rendered anchor
-    text, state) is handed in; nothing is fetched from a second source.
-
-    Variety discipline mirrors Narrator: rolling window per category, no
-    consecutive repeats via shape_signature, deterministic seeding from
-    match_id + sequence so replays are stable.
-    """
-
-    def __init__(self, window: int = DEFAULT_WINDOW,
-                 milestone_kinds=None, enabled: bool = True):
-        self.window = max(2, int(window))
-        self.enabled = bool(enabled)
-        self.milestone_kinds = frozenset(
-            milestone_kinds) if milestone_kinds is not None \
-            else set(DEFAULT_MILESTONE_KINDS)
-        self._families: dict[str, list[int]] = {}
-        self._last_shape_by_cat: dict[str, str | None] = {}
-        self._seq = 0
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
-    def qualifies(self, event) -> bool:
-        """True when this event may spawn an analyst companion."""
-        if not self.enabled or event is None:
-            return False
-        kind = getattr(event, "kind", None)
-        if not isinstance(kind, str) or kind not in ev.ALL_KINDS:
-            return False
-        try:
-            salience = int(getattr(event, "salience", 0) or 0)
-        except (TypeError, ValueError):
-            salience = 0
-        return salience >= ev.SALIENCE_HIGH or kind in self.milestone_kinds
-
-    def maybe_reply(self, anchor_utt, event, state=None):
-        """Render the analyst companion for a JUST-RENDERED anchor utterance.
-
-        ``anchor_utt`` is the Narrator's play-by-play Utterance; ``event`` is
-        the originating Event (payload drives category selection). Returns
-        the companion Utterance or None (disabled / non-qualifying /
-        degenerate text). Never raises.
-        """
-        try:
-            return self._maybe_reply_inner(anchor_utt, event, state)
-        except Exception:
-            return None
-
-    # ------------------------------------------------------------------
-    # Internals
-    # ------------------------------------------------------------------
-
-    def _maybe_reply_inner(self, anchor_utt, event, state=None):
-        if not self.qualifies(event) or anchor_utt is None:
-            return None
-        category = classify_analyst_category(event)
-        pool = tpl.ANALYST_POOLS.get(category) or []
-        if not pool:
-            return None
-
-        slots = self._reply_slots(anchor_utt, event, state)
-        idx = self._pick_index(category, pool)
-        text = tpl_safe_format(pool[idx], slots)
-        if not text or not text.strip():
-            return None
-
-        # Shape-signature consecutive-repeat guard (rotate once if needed).
-        shape = tpl.shape_signature(text)
-        if shape == self._last_shape_by_cat.get(category) \
-                and len(pool) > 1:
-            for alt_idx in range(len(pool)):
-                if alt_idx == idx:
-                    continue
-                alt_text = tpl_safe_format(pool[alt_idx], slots)
-                if not alt_text or not alt_text.strip():
-                    continue
-                alt_shape = tpl.shape_signature(alt_text)
-                if alt_shape != shape:
-                    idx, text, shape = alt_idx, alt_text, alt_shape
-                    break
-        self._last_shape_by_cat[category] = shape
-
-        self._seq += 1
-        anchor_uid = anchor_utt.uid
-        return Utterance(
-            uid=f"{anchor_utt.match_id or 'unknown'}-analyst-{self._seq}",
-            match_id=anchor_utt.match_id,
-            kind=anchor_utt.kind,
-            text=text.strip(),
-            salience=max(1, int(getattr(anchor_utt, "salience", 1) or 1)),
-            ts_created=float(getattr(anchor_utt, "ts_created", 0.0) or 0.0),
-            tempo=getattr(anchor_utt, "tempo", "normal"),
-            excitement=getattr(anchor_utt, "excitement", "normal"),
-            rate=float(getattr(anchor_utt, "rate", 1.0) or 1.0),
-            role="color_analyst",
-            dialogue_id=f"dlg-{anchor_uid}",
-            anchor_uid=anchor_uid,
-        )
-
-    def _reply_slots(self, anchor_utt, event, state=None):
-        """Minimal slot set for analyst templates ({actor} only today)."""
-        slots: dict[str, Any] = {}
-        seat = getattr(event, "seat", None)
-        actor = ""
-        try:
-            names = getattr(getattr(state, "match_meta", None),
-                            "player_names", None) or {}
-            actor = str(names.get(seat)) if names.get(seat) else ""
-        except Exception:
-            actor = ""
-        if not actor:
-            actor = f"seat {seat}" if seat is not None else "our player"
-        slots["actor"] = actor
-        # Forward payload keys tolerantly so richer analyst templates can
-        # grow without narrator changes.
-        payload = getattr(event, "payload", {}) or {}
-        for key, val in payload.items():
-            if key not in slots and isinstance(val, (str, int, float)):
-                slots[key] = val
-        return slots
-
-    def _pick_index(self, category: str, pool: list[str]) -> int:
-        """Window-weighted pick; never the same index twice consecutively."""
-        n = len(pool)
-        if n == 1:
-            return 0
-        recent = self._families.setdefault(category, [])
-        rng_seed = (_stable_hash("analyst") * 31 + self._seq * 7 + 13) \
-            & 0xFFFFFFFFFFFF
-        rng = random.Random(rng_seed)
-
-        blocked = set(recent[-self.window:])
-        candidates = [i for i in range(n) if i not in blocked]
-        if not candidates:
-            spread_block = set(recent[-(n - 1):]) if n > 1 else set()
-            candidates = [i for i in range(n) if i not in spread_block]
-            if not candidates:
-                candidates = [i for i in range(n)
-                              if i not in set(recent[-1:])]
-            if not candidates:
-                candidates = list(range(n))
-
-        weights = []
-        for i in candidates:
-            penalty = 1.0
-            for distance, recent_idx in enumerate(reversed(recent)):
-                if recent_idx == i:
-                    penalty *= 0.25 * (0.8 ** distance)
-            weights.append(max(penalty, 0.01))
-
-        chosen = rng.choices(candidates, weights=weights, k=1)[0]
-        recent.append(chosen)
-        del recent[: max(0, len(recent) - self.window)]
-        return chosen
-
-
-def tpl_safe_format(template: str, slots: dict) -> str:
-    """Missing-slot-tolerant format_map shared with Narrator._safe_format."""
-    try:
-        class _SafeDict(dict):
-            def __missing__(self, key):
-                return ""
-        return str(template).format_map(_SafeDict(slots))
-    except Exception:
-        try:
-            return str(template)
-        except Exception:
-            return ""

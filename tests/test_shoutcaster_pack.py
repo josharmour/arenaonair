@@ -83,6 +83,7 @@ def _make_state(snapshot_id: int = 1,
     }
 
     return GameState(
+        game_stage="GameStage_Play",
         snapshot_id=snapshot_id,
         prev_snapshot_id=None if snapshot_id <= 1 else snapshot_id - 1,
         match_meta=MatchMeta(match_id=match_id, format_name="Standard"),

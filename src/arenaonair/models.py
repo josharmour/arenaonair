@@ -55,6 +55,9 @@ class CardRef:
     loyalty: int | None = None
     controller_seat: int | None = None
     owner_seat: int | None = None
+    is_token: bool | None = None
+    is_tapped: bool | None = None
+    object_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -63,6 +66,7 @@ class ZoneView:
     zone_type: str                              # e.g. "battlefield", "hand"
     owner_seat: int | None
     object_ids: tuple[int, ...]                 # ordered as reported
+    membership_known: bool = True
 
 
 @dataclass(frozen=True)
@@ -106,16 +110,22 @@ class GameState:
     player_decks: Mapping[int, tuple[int, ...]] = field(default_factory=dict)
     commander_cards_by_seat: Mapping[int, tuple[int, ...]] = field(default_factory=dict)
     seat_knowledge: Mapping[int, "SeatKnowledge"] = field(default_factory=dict)
+    gre_state_id: int | None = None
+    game_id: int | str | None = None
+    game_stage: str | None = None              # GRE stage; Start includes mulligans
+    received_at: float | None = None  # receiver monotonic clock
+    chain_valid: bool = False
+    legal_actions: Mapping[int, tuple[int, ...]] = field(default_factory=dict)
 
     @property
     def is_omniscient(self) -> bool:
         """Derived conservative flag: every seat's hand visible AND library
         accounted exactly. Detectors must gate on specific SeatKnowledge
         fields instead of this blanket boolean."""
-        if not self.seat_knowledge:
+        if not self.players or not set(self.players) <= set(self.seat_knowledge):
             return False
         return all(
-            k.hand_visible and k.library_uncertainty == "exact"
+            k.hand_visible and k.hand_fresh_asof is not None and k.library_accounted and k.library_uncertainty == "exact"
             for k in self.seat_knowledge.values()
         )
 
@@ -168,6 +178,7 @@ class Utterance:
     dialogue_id: str | None = None              # groups anchor+reply pair
     anchor_uid: str | None = None               # reply eligible only after THIS uid delivers ok
     expires_ts: float | None = None             # reply eligibility deadline (receiver clock)
+    requires_fresh_state: bool = False          # current private/tactical facts, not past public plays
 
 
 @dataclass(frozen=True)

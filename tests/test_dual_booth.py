@@ -1,8 +1,7 @@
 """Dual-booth broadcast booth tests (single-log pipeline).
 
 Covers the five dual-booth deliverables:
-  D1 DialogueSequencer: analyst companions for qualifying anchors only,
-     role/dialogue_id/anchor_uid lineage, category heuristics, variety.
+  D1 Generative writing: see test_llm_booth.py; obsolete pool tests removed.
   D2 Anchor-gated delivery: reply withheld until anchor ok; failure/cancel
      drops the reply; expires_ts expiry; PRESERVED_KINDS never gated.
   D3 Co-caster pacing: handoff_gap_s vs play_gap band (fake-clock asserts).
@@ -19,11 +18,6 @@ import pytest
 
 from arenaonair import events as ev
 from arenaonair.models import DeliveryResult, Event, Utterance
-from arenaonair.narrator import (
-    DEFAULT_MILESTONE_KINDS,
-    DialogueSequencer,
-    classify_analyst_category,
-)
 from arenaonair.speech import (
     PRESERVED_KINDS,
     SALIENCE_HIGH,
@@ -34,7 +28,6 @@ from arenaonair.speech import (
     SpeechQueue,
     spoke_utt_of,
 )
-from arenaonair.templates import ANALYST_POOLS, shape_signature
 
 
 # ---------------------------------------------------------------------------
@@ -64,143 +57,7 @@ class FakeState:
         self.match_meta = self._Meta(names or {1: "Josh", 2: "Rival"})
 
 
-# ---------------------------------------------------------------------------
-# D1 -- DialogueSequencer
-# ---------------------------------------------------------------------------
-
-class TestAnalystQualification:
-    def test_qualifying_anchor_yields_one_companion(self):
-        ds = DialogueSequencer()
-        anchor = mk_utt("a1")
-        event = mk_event(ev.COUNTER, payload={"name": "Bolt"})
-        reply = ds.maybe_reply(anchor, event)
-        assert reply is not None
-        assert reply.role == "color_analyst"
-        assert reply.dialogue_id == "dlg-a1"
-        assert reply.anchor_uid == "a1"
-
-    def test_lineage_shares_match_and_kind(self):
-        ds = DialogueSequencer()
-        anchor = mk_utt("a2", match_id="match-X", kind="combat_damage")
-        event = mk_event(ev.COMBAT_DAMAGE, payload={"amount": 6})
-        reply = ds.maybe_reply(anchor, event)
-        assert reply.match_id == "match-X"
-        assert reply.kind == "combat_damage"
-
-    def test_low_salience_non_milestone_gets_no_reply(self):
-        ds = DialogueSequencer()
-        anchor = mk_utt("a3", kind="land_drop", salience=1)
-        event = mk_event(ev.LAND_DROP, payload={"name": "Island"},
-                         salience=1)
-        assert ds.qualifies(event) is False
-        assert ds.maybe_reply(anchor, event) is None
-
-    def test_milestone_kind_qualifies_even_at_low_salience(self):
-        custom = DialogueSequencer(milestone_kinds={"land_drop"})
-        event = mk_event(ev.LAND_DROP, salience=1)
-        assert custom.qualifies(event) is True
-        anchor = mk_utt("a4", kind="land_drop", salience=1)
-        assert custom.maybe_reply(anchor, event) is not None
-
-    def test_default_milestones_cover_drama_kinds(self):
-        assert ev.COUNTER in DEFAULT_MILESTONE_KINDS
-        assert ev.COMBAT_DAMAGE in DEFAULT_MILESTONE_KINDS
-
-    def test_disabled_sequencer_never_replies(self):
-        ds = DialogueSequencer(enabled=False)
-        event = mk_event(ev.COUNTER)
-        assert ds.qualifies(event) is False
-        assert ds.maybe_reply(mk_utt("a5"), event) is None
-
-    def test_exactly_one_reply_per_anchor(self):
-        ds = DialogueSequencer()
-        anchor = mk_utt("a6")
-        event = mk_event(ev.COUNTER)
-        first = ds.maybe_reply(anchor, event)
-        second = ds.maybe_reply(anchor, event)
-        # Both calls render companions but each carries the SAME dialogue id;
-        # the pipeline enqueues at most one (dedupe by uid is downstream).
-        assert first.dialogue_id == second.dialogue_id == "dlg-a6"
-
-
-class TestAnalystCategories:
-    def test_counter_maps_to_exclamation(self):
-        assert classify_analyst_category(
-            mk_event(ev.COUNTER)) == "exclamation"
-
-    def test_life_swing_payload_maps_to_exclamation(self):
-        e = mk_event(ev.LIFE_CHANGE,
-                     payload={"delta": -12, "reason": "combat damage"})
-        assert classify_analyst_category(e) == "exclamation"
-
-    def test_removal_maps_to_tactical(self):
-        e = mk_event(ev.CAST,
-                     payload={"name": "Murder", "reason": "destroy creature"})
-        assert classify_analyst_category(e) == "tactical"
-
-    def test_resource_transaction_maps_to_tactical(self):
-        e = mk_event(ev.LAND_DROP, payload={"name": "Island",
-                                            "detail": "mana development"})
-        assert classify_analyst_category(e) == "tactical"
-
-    def test_risky_move_maps_to_doubt(self):
-        e = mk_event(ev.ATTACK_DECLARED,
-                     payload={"risk": True, "detail": "all-in attack"})
-        assert classify_analyst_category(e) == "doubt"
-
-    def test_clean_execution_defaults_to_agree(self):
-        e = mk_event(ev.RESOLVE, payload={"name": "Peacekeeper"})
-        assert classify_analyst_category(e) == "agree"
-
-    def test_garbage_event_degrades_to_agree_without_raising(self):
-        assert classify_analyst_category(None) == "agree"
-
-
-class TestAnalystVariety:
-    def test_every_category_has_six_plus_templates(self):
-        for cat, pool in ANALYST_POOLS.items():
-            assert len(pool) >= 6, cat
-
-    def test_shapes_are_structurally_distinct_within_categories(self):
-        for cat, pool in ANALYST_POOLS.items():
-            sigs = {shape_signature(t) for t in pool}
-            assert len(sigs) >= 4, cat  # coarse shapes vary
-
-    def test_no_consecutive_shape_repeats_over_long_run(self):
-        ds = DialogueSequencer()
-        event = mk_event(ev.COUNTER)  # always exclamation
-        last_shape = None
-        for i in range(12):
-            anchor = mk_utt(f"rep{i}", ts_created=float(i))
-            reply = ds.maybe_reply(anchor, event)
-            assert reply is not None
-            shape = shape_signature(reply.text)
-            if last_shape is not None:
-                # Rotation guard: an immediate repeat must have been rotated
-                # away when an alternate shape existed (pool has 6 shapes).
-                pass
-            last_shape = shape
-
-    def test_variety_over_many_renders(self):
-        ds = DialogueSequencer()
-        event = mk_event(ev.COUNTER)
-        texts = set()
-        for i in range(10):
-            reply = ds.maybe_reply(mk_utt(f"v{i}", ts_created=float(i)), event)
-            texts.add(reply.text)
-        assert len(texts) >= 4  # window rotation produces real variety
-
-    def test_announcer_not_coach_wording(self):
-        forbidden = ("you should", "you must", "you'll want", "you need to",
-                     "consider ", "don't ", "make sure", "remember to",
-                     "be careful", "watch out for", "think about",
-                     "try to ")
-        for pool in ANALYST_POOLS.values():
-            for template in pool:
-                lowered = template.lower()
-                for pattern in forbidden:
-                    assert pattern not in lowered, (pattern, template)
-
+# Generative writing and memory contracts live in test_llm_booth.py.
 
 # ---------------------------------------------------------------------------
 # D2 -- Anchor-gated delivery

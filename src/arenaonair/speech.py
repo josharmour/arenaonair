@@ -13,10 +13,11 @@ Reliability contract items enforced here (DESIGN §6):
 from __future__ import annotations
 
 import logging
+from collections import deque
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable
 
 from .interfaces import Speaker
@@ -26,8 +27,8 @@ logger = logging.getLogger(__name__)
 
 
 def default_now() -> float:
-    """Receiver-clock default (time.time) for reply-expiry comparisons."""
-    return time.time()
+    """Receiver-clock default (time.monotonic) for reply-expiry comparisons."""
+    return time.monotonic()
 
 # Salience scale mirrors events.py; duplicated numerically to keep speech.py
 # decoupled from the differ's constant table.
@@ -79,7 +80,9 @@ class SpeechQueue:
         self._active_match: str | None = None
         # anchor uid -> DeliveryResult of the most recent delivery attempt
         self._anchor_results: dict[str, DeliveryResult] = {}
-        # Injectable clock for expiry checks (defaults to time.time; tests
+        self._last_delivered_uid: str | None = None
+        self._discards = deque(maxlen=512)
+        # Injectable clock for expiry checks (defaults to time.monotonic; tests
         # swap in a fake clock). Receiver-clock semantics: expires_ts values
         # are compared against the same clock that stamped ts_created.
         self.now_fn: Callable[[], float] = default_now
@@ -126,6 +129,15 @@ class SpeechQueue:
         """
         with self._lock:
             self._anchor_results[result.uid] = result
+            if len(self._anchor_results) > 1024:
+                needed = {u.anchor_uid for u in self._items}
+                for uid in list(self._anchor_results):
+                    if len(self._anchor_results) <= 512:
+                        break
+                    if uid not in needed:
+                        self._anchor_results.pop(uid)
+            if result.ok:
+                self._last_delivered_uid = result.uid
 
     def anchor_ok(self, anchor_uid: str | None) -> bool:
         """True iff the anchor delivered successfully (or is ungated)."""
@@ -143,25 +155,50 @@ class SpeechQueue:
         the number removed.
         """
         with self._lock:
-            survivors = []
-            removed = 0
-            for u in self._items:
-                anchor_uid = getattr(u, "anchor_uid", None)
-                if anchor_uid:
-                    result = self._anchor_results.get(anchor_uid)
-                    if result is not None and not result.ok:
-                        logger.debug(
-                            "dropping analyst reply uid=%s: anchor %s "
-                            "did not deliver (%s)",
-                            u.uid, anchor_uid, result.reason or "failed",
-                        )
-                        removed += 1
-                        continue
-                survivors.append(u)
-            if removed > 0:
-                self._items = survivors
-                self._uids = {u.uid for u in survivors}
-            return removed
+            total = 0
+            while True:
+                dead = {}
+                for u in self._items:
+                    if u.expires_ts is not None and self.now_fn() > u.expires_ts and u.kind not in PRESERVED_KINDS:
+                        dead[u.uid] = "expired"
+                    elif u.anchor_uid and (result := self._anchor_results.get(u.anchor_uid)) is not None and not result.ok:
+                        logger.debug("dropping reply: anchor %s did not deliver", u.anchor_uid)
+                        dead[u.uid] = "orphaned"
+                if not dead:
+                    return total
+                for uid, reason in dead.items():
+                    self._discard_locked(uid, reason)
+                self._items = [u for u in self._items if u.uid not in dead]
+                total += len(dead)
+
+    def _discard_locked(self, uid, reason):
+        self._uids.discard(uid)
+        self._anchor_results[uid] = DeliveryResult(uid, False, reason)
+        self._discards.append((uid, reason))
+        if len(self._anchor_results) > 1024:
+            needed = {u.anchor_uid for u in self._items}
+            for old in list(self._anchor_results)[:512]:
+                if old not in needed:
+                    self._anchor_results.pop(old, None)
+
+    def _retain_locked(self, survivors, reason="pruned"):
+        kept = {u.uid for u in survivors}
+        for u in self._items:
+            if u.uid not in kept:
+                self._discard_locked(u.uid, reason)
+        self._items = survivors
+        self._uids = kept
+
+    def cancel_uids(self, uids, reason="cancelled"):
+        with self._lock:
+            self._retain_locked([u for u in self._items if u.uid not in uids], reason)
+        self.drop_dead_replies()
+
+    def take_discards(self):
+        with self._lock:
+            items = list(self._discards)
+            self._discards.clear()
+            return items
 
     def forget_anchor(self, anchor_uid: str) -> bool:
         """Drop the queued reply(ies) anchored to ``anchor_uid`` outright.
@@ -183,8 +220,15 @@ class SpeechQueue:
                     continue
                 survivors.append(u)
             if removed:
-                self._items = survivors
-                self._uids = {u.uid for u in survivors}
+                self._retain_locked(survivors)
+        return removed
+
+    def prune_replies(self, *, state_dependent_only=False) -> int:
+        with self._lock:
+            kept = [u for u in self._items if not u.anchor_uid or
+                    (state_dependent_only and not u.requires_fresh_state)]
+            removed = len(self._items) - len(kept)
+            self._retain_locked(kept)
             return removed
 
     def flush(self, match_id: str | None) -> int:
@@ -196,8 +240,7 @@ class SpeechQueue:
         with self._lock:
             survivors = [u for u in self._items if u.match_id != match_id]
             removed = len(self._items) - len(survivors)
-            self._items = survivors
-            self._uids = {u.uid for u in survivors}
+            self._retain_locked(survivors)
             self._flushed_matches.add(match_id)
             return removed
 
@@ -221,14 +264,15 @@ class SpeechQueue:
                 else:
                     survivors.append(u)
             if removed > 0:
-                self._items = survivors
-                self._uids = {u.uid for u in survivors}
+                self._retain_locked(survivors)
             return removed
 
-    def prune_plays(self, match_id: str | None = None) -> int:
+    def prune_plays(self, match_id: str | None = None, *, preserve_public_replies=False, in_flight_uid=None) -> int:
         """Fast-tempo / play-boundary discipline: drop un-spoken play-by-play speech.
 
         Leaves boundary events (match_start/end, game_start/end) intact.
+        Live tempo pruning may retain a fresh public reaction to a delivered
+        or in-flight anchor. Boundary cleanup uses the default full pruning.
         Returns the number of dropped utterances.
         """
         with self._lock:
@@ -236,13 +280,17 @@ class SpeechQueue:
             survivors = []
             removed = 0
             for u in self._items:
-                if (target_match is None or u.match_id == target_match) and u.kind not in PRESERVED_KINDS:
+                result = self._anchor_results.get(u.anchor_uid)
+                keep_reply = (preserve_public_replies and u.anchor_uid and
+                              not u.requires_fresh_state and
+                              (u.anchor_uid == in_flight_uid or (result is not None and result.ok)) and
+                              (u.expires_ts is None or self.now_fn() <= u.expires_ts))
+                if (target_match is None or u.match_id == target_match) and u.kind not in PRESERVED_KINDS and not keep_reply:
                     removed += 1
                 else:
                     survivors.append(u)
             if removed > 0:
-                self._items = survivors
-                self._uids = {u.uid for u in survivors}
+                self._retain_locked(survivors)
             return removed
 
     def play_count(self, match_id: str | None = None) -> int:
@@ -273,7 +321,9 @@ class SpeechQueue:
             idx = self._best_index_locked()
             if idx is None:
                 return None
-            return self._items.pop(idx)
+            utt = self._items.pop(idx)
+            self._uids.discard(utt.uid)
+            return utt
 
     def peek_best(self) -> Utterance | None:
         with self._lock:
@@ -301,11 +351,14 @@ class SpeechQueue:
 
     def _best_index_locked(self) -> int | None:
         best_idx: int | None = None
-        best_key: tuple[int, float] | None = None
+        best_key: tuple[int, int, float] | None = None
+        queued_uids = {u.uid for u in self._items}
         for i, u in enumerate(self._items):
             if self._is_stale_locked(u):
                 continue
-            key = self._sort_key(u)
+            adjacent = (u.anchor_uid and u.anchor_uid == self._last_delivered_uid
+                        and u.anchor_uid not in queued_uids)
+            key = (-u.salience, 0 if adjacent else 1, u.ts_created)
             if best_key is None or key < best_key:
                 best_key, best_idx = key, i
         return best_idx
@@ -367,6 +420,10 @@ class SpeechPump:
     results: list[DeliveryResult] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
     stopped: bool = False
+    on_delivery: Callable | None = None
+    validate: Callable | None = None
+    #: Last rewrite before a line is spoken (names, speed); must not raise.
+    prepare: Callable | None = None
 
     # -- co-caster pacing knobs (D3) ----------------------------------------
     #: Tight gap between an anchor and its queued analyst reply (seconds).
@@ -390,11 +447,21 @@ class SpeechPump:
         return self.deliver(utt)
 
     def deliver(self, utt: Utterance) -> DeliveryResult:
+        if self.prepare is not None:
+            utt = self.prepare(utt)
         with self.lock:
             self.current = utt
+        if self.validate is not None and not self.validate(utt):
+            result = DeliveryResult(utt.uid, False, "invalidated_before_speech")
+            with self.lock:
+                self.current = None
+            self.record(result, utt)
+            return result
         mark = getattr(self.speaker, "mark_current", None)
         if callable(mark):
             mark(utt)
+        logger.info("Speaking %s [%s]: %s", utt.role, utt.voice or "engine default", utt.text,
+                    extra={"game_event_kind": utt.kind})
         try:
             result = self.speaker.speak(utt)
         except Exception as exc:  # Speaker promises not to raise; belt+braces
@@ -484,6 +551,8 @@ class SpeechPump:
 
     def stop(self) -> None:
         self.stopped = True
+        if getattr(self, "current", None) is not None:
+            self.speaker.cancel()
 
     # -- bookkeeping ------------------------------------------------------
 
@@ -491,13 +560,19 @@ class SpeechPump:
         """Confirm delivery; loud WARNING on any failure (never silent)."""
         with self.lock:
             self.results.append(result)
+            del self.results[:-512]
             ledger = getattr(self, "_last_utt_by_uid", None)
             if ledger is None:
                 ledger = {}
                 self._last_utt_by_uid = ledger
             ledger[result.uid] = utt
+            while len(ledger) > 512:
+                ledger.pop(next(iter(ledger)))
         # Anchor bookkeeping: unblock (or doom) dependent replies.
         self.queue.note_anchor_result(result)
+        if self.on_delivery is not None:
+            self.on_delivery(result, utt)
+        logger.info("Delivery %s role=%s", "ok" if result.ok else "failed", utt.role)
         if not result.ok:
             logger.warning(
                 "speech delivery FAILED uid=%s kind=%s reason=%s text=%r",
@@ -560,6 +635,8 @@ def _apply_voice_kwargs(
       - unknown engines: pass ``voice`` only when the constructor accepts it.
     """
     if not effective_voice:
+        return kwargs
+    if name != "kokoro" and effective_voice.startswith(("am_", "af_", "bm_", "bf_")):
         return kwargs
     if name == "kokoro":
         kwargs.setdefault("voice", effective_voice)
@@ -650,6 +727,7 @@ class EngineSpeaker:
         # Dual-booth: a per-utterance voice override must reach the engine
         # even when the engine lacks a per-call voice parameter — temporarily
         # stamp the engine default, then restore.
+        utterance = _utterance_for_engine(self.engine, utterance)
         override = getattr(utterance, "voice", None)
         if not override:
             return self.engine.speak(utterance)
@@ -657,6 +735,8 @@ class EngineSpeaker:
             return self.engine.speak(utterance)
 
     def set_voice(self, voice: str) -> None:
+        if self.engine.name in ("say", "sapi", "piper", "espeakng") and voice.startswith(("am_", "af_", "bm_", "bf_")):
+            return
         if hasattr(self.engine, "set_voice"):
             self.engine.set_voice(voice)
         elif hasattr(self.engine, "voice"):
@@ -667,6 +747,15 @@ class EngineSpeaker:
 
     def shutdown(self) -> None:
         self.engine.shutdown()
+
+
+def _utterance_for_engine(engine, utterance):
+    # Kokoro IDs are not valid macOS/Windows/Piper voice names. Preserve the
+    # fallback engine's configured default instead of failing both voices.
+    voice = utterance.voice or ""
+    if engine.name != "kokoro" and voice.startswith(("am_", "af_", "bm_", "bf_")):
+        return replace(utterance, voice=None)
+    return utterance
 
 
 class _engine_voice_override:
@@ -741,6 +830,8 @@ class ChainedSpeaker:
 
     def set_voice(self, voice: str) -> None:
         for eng in self.engines:
+            if eng.name in ("say", "sapi", "piper", "espeakng") and voice.startswith(("am_", "af_", "bm_", "bf_")):
+                continue
             if hasattr(eng, "set_voice"):
                 eng.set_voice(voice)
             elif hasattr(eng, "voice"):
@@ -755,13 +846,14 @@ class ChainedSpeaker:
 
     def speak(self, utterance: Utterance) -> DeliveryResult:
         reasons: list[str] = []
-        override = getattr(utterance, "voice", None)
         for idx, eng in enumerate(self.engines):
+            routed = _utterance_for_engine(eng, utterance)
+            override = routed.voice
             if override:
                 with _engine_voice_override(eng, override):
-                    result = eng.speak(utterance)
+                    result = eng.speak(routed)
             else:
-                result = eng.speak(utterance)
+                result = eng.speak(routed)
             if result.ok:
                 self._active = idx
                 return result
@@ -889,6 +981,7 @@ class FakeSpeaker:
 
         with self._lock:
             self.results.append(result)
+            del self.results[:-512]
             self.last_result = result
             if result.ok:
                 self.delivered_texts.append(utterance.text)
