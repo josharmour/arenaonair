@@ -178,6 +178,21 @@ class TestBasicFolding:
         assert s2.zones["battlefield:pub"].object_ids == (10,)
         assert s2.zones["stack:pub"].object_ids == ()
 
+    def test_object_reported_in_a_new_zone_leaves_its_old_one(self):
+        # A resolving creature: the GRE reports the battlefield with it and the
+        # emptied stack without an id list (match 55b9b487, gsid 237 -> 239).
+        b = GameStateBuilder()
+        b.apply(None, gs_msg(full_state(zones=[
+            {"zoneId": 1, "type": "ZoneType_Battlefield", "objectInstanceIds": [10]},
+            {"zoneId": 5, "type": "ZoneType_Stack", "objectInstanceIds": [595]},
+        ])))
+        s2 = b.apply(None, gs_msg(diff_state(2, zones=[
+            {"zoneId": 1, "type": "ZoneType_Battlefield", "objectInstanceIds": [595, 10]},
+            {"zoneId": 5, "type": "ZoneType_Stack", "visibility": "Visibility_Public"},
+        ])))
+        assert s2.zones["battlefield:pub"].object_ids == (595, 10)
+        assert s2.zones["stack:pub"].object_ids == ()
+
     def test_objects_merge_and_delete(self):
         b = GameStateBuilder()
         b.apply(None, gs_msg(full_state(gameObjects=[

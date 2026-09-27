@@ -12,6 +12,7 @@ Semantics implemented (see docs/DESIGN.md section 3.3):
 - ``GameStateType_Diff`` patches:
     * ``zones`` entries REPLACE that zone's membership when they carry
       ``objectInstanceIds``; entries without ids only refresh zone metadata.
+      Reported ids leave every zone the message didn't re-report.
     * ``gameObjects`` MERGE by ``instanceId`` (present fields overwrite).
     * ``diffDeletedInstanceIds`` REMOVE objects (and their zone membership).
     * ``players`` PATCH by ``systemSeatNumber``.
@@ -415,6 +416,7 @@ class GameStateBuilder:
                 prev_gre = prev_val
 
         # Zones --------------------------------------------------------------------
+        reported = []
         if isinstance(msg_zones, list):
             for z in msg_zones:
                 if not isinstance(z, Mapping):
@@ -444,6 +446,8 @@ class GameStateBuilder:
 
                 if existing is None:
                     wz = _WorkingZone(zid, ztype_str, owner, ids_value, ids_present)
+                    if ids_present:
+                        reported.append(wz)
                     if zid is not None:
                         zones_by_id[zid] = wz
                     elif ztype_str:
@@ -461,6 +465,15 @@ class GameStateBuilder:
                     if ids_present:
                         existing.object_ids = ids_value
                         existing.membership_known = True
+                        reported.append(existing)
+            # An object is in one zone: ids reported for a zone leave every zone
+            # this message didn't re-report. A zone emptied by the move can arrive
+            # without an id list (a resolved spell's stack), which alone would
+            # leave the object on the stack until the stack next changed.
+            claimed = {i for wz in reported for i in wz.object_ids}
+            for wz in zones_by_id.values():
+                if wz not in reported and claimed.intersection(wz.object_ids):
+                    wz.object_ids = [i for i in wz.object_ids if i not in claimed]
 
         # Objects -------------------------------------------------------------------
         if isinstance(msg_objects, list):
