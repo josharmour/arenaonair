@@ -158,7 +158,10 @@ source invalidates dependent work without disabling either voice.
 
 The LLM input treats legacy RESOLVE events as stack departures, not proof of
 successful resolution, unless the spell arrived on the battlefield: only a permanent
-spell that resolved gets there (rule 608.3), so that event is `resolved`. Counter
+spell that resolved gets there (rule 608.3), so that event is `resolved`. The GRE
+sends an emptied stack without an id list, so the builder removes an object from any
+zone once a message reports it elsewhere; before that, a resolution surfaced only when
+the stack next changed, often the opponent's upkeep a turn later. Counter
 claims require explicit annotation evidence.
 Combat request candidates without confirmed GRE attack/block states are excluded.
 An attack names its attacker (only the active player attacks) and, in a two-player
@@ -233,8 +236,18 @@ schema restricts roles and reference IDs. Local checks reject malformed output,
 reasoning/instructions, unsupported numeric literals or spelled numbers, internal IDs, unanswered
 handoffs, and unsupported causal/exclusivity language. Explicit guards also prevent an
 unqualified resolution claim and broadening a next-creature boon to other creatures. A separate GLM audit checks
-**each line against only its cited evidence**. A single bounded repair attempt may
-correct a rejection before the deadline. A valid JSON shape is not a factuality
+**each line against only its cited evidence**. It judges facts, not style: tone,
+figurative verbs for a cited action ("slams", "joins the board") and plainly worded
+opinion pass, while every who/what/number, ordinal ("first", "again"), timing, cause,
+target and whole-board claim must be supported, as must a figure that implies a fact
+("survives") and any condition a line adds to a card's rules ("outside the draw
+step"). The writer is told sequence words (again, finally, since the wipe) need the
+earlier event or heard line cited. In the September 26 replays most of
+its rejections were of such color ("joins", "real edge"). A single bounded repair
+attempt may correct a rejection within 12 s of the play (a write plus fact-check
+takes 6-10 s, so the earlier 6 s left few rejections a second try). A rewrite that
+would finish after `llm_call_max_age` is the analyst's alone, and is skipped when
+the analyst has no airtime left; urgent plays are exempt. A valid JSON shape is not a factuality
 certificate; semantic auditing is an additional, imperfect check.
 
 The request and all its speech expire 24 seconds after the oldest relevant event

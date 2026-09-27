@@ -477,6 +477,26 @@ def test_one_repair_uses_rejected_claim_feedback_without_marking_it_spoken():
     assert b.counts['repair_attempts'] == 1
 
 
+@pytest.mark.parametrize('write_s, analyst_left, rewrite_roles', [
+    (3, 2, ['play_by_play', 'color_analyst']),  # a rewrite still lands in time for a call
+    (7, 2, ['color_analyst']),                  # too late for a call: the analyst's point only
+    (7, 0, None),                               # ...and not when the analyst has no airtime left
+    (13, 2, None),                              # past the rewrite window: silence
+])
+def test_rewrite_window_and_late_rewrites_go_to_the_analyst(write_s, analyst_left, rewrite_roles):
+    b, q, clock, w, _ = setup_booth(analyst_lines_per_turn=analyst_left)
+    def slow(context):
+        clock.value += write_s  # the write + fact-check round trip
+        return {'turns': [{'role': 'play_by_play', 'text': 'Opt resolves.', 'refs': context['new_events']}]}
+    w.output = slow
+    run(b)
+    if rewrite_roles is None:
+        assert len(w.contexts) == 1
+    else:
+        assert len(w.contexts) == 2 and w.contexts[1]['allowed_roles'] == rewrite_roles
+        assert ('only the color_analyst' in w.contexts[1]['validation_feedback']['instruction']) is (len(rewrite_roles) == 1)
+
+
 def test_stack_departure_cannot_be_announced_as_resolution():
     b, q, _, w, _ = setup_booth()
     w.output = lambda c: {'turns': [{'role': 'play_by_play', 'text': 'Opt resolves.', 'refs': c['new_events']}]}
