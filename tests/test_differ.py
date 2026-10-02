@@ -768,7 +768,11 @@ def load_match_01_via_pipeline():
     for idx, rec in enumerate(records):
         raw = json.dumps(rec["obj"])
         messages.extend(parse_line_all(float(idx), raw))
-    builder = GameStateBuilder()
+    try:
+        from arenaonair.carddb import CardDb
+        builder = GameStateBuilder(name_resolver=CardDb().as_resolver())
+    except Exception:
+        builder = GameStateBuilder()
     current = None
     pairs = []
     since = []
@@ -858,3 +862,86 @@ class TestIntegrationMatch01:
         # within a window in this fixture; both are valid outcomes, but the
         # merge machinery itself is covered by TestDebouncer.
         assert isinstance(found_burst, bool)
+
+
+class TestCardRevealed:
+    """A1: GameObjectType_RevealedCard objects -> CARD_REVEALED events."""
+
+    @pytest.fixture(scope="class")
+    def replay_results(self):
+        pairs = load_match_01_via_pipeline()
+        differ = EventDiffer()
+        all_events = []
+        for prev, cur, since in pairs:
+            all_events.extend(differ.diff(prev, cur, since))
+        return pairs, all_events
+
+    def test_reveals_detected_in_fixture(self, replay_results):
+        _, all_events = replay_results
+        reveals = of_kind(all_events, ev.CARD_REVEALED)
+        # diff() debounces internally: gsid-114 pair + gsid-148 Tasha burst
+        # collapse into 2 aggregated events.
+        assert len(reveals) == 2
+
+    def test_big_reveal_aggregates_eleven_cards(self, replay_results):
+        _, all_events = replay_results
+        reveals = of_kind(all_events, ev.CARD_REVEALED)
+        big = [e for e in reveals if (e.payload.get("count") or 0) >= 10]
+        assert len(big) == 1
+        names = [n for n in big[0].payload.get("names") or [] if n]
+        joined = " ".join(names)
+        assert "Vorinclex" in joined
+        assert "Titan of Industry" in joined
+
+    def test_small_reveal_pair(self, replay_results):
+        _, all_events = replay_results
+        reveals = of_kind(all_events, ev.CARD_REVEALED)
+        small = [e for e in reveals if e.payload.get("count") == 2]
+        assert len(small) == 1
+
+    def test_payload_has_ids(self, replay_results):
+        _, all_events = replay_results
+        reveals = of_kind(all_events, ev.CARD_REVEALED)
+        assert reveals
+        for event in reveals:
+            if event.payload.get("count", 1) == 1:
+                assert event.payload.get("grp_id") is not None
+                assert event.payload.get("instance_id") is not None
+            else:
+                assert len(event.payload.get("grp_ids") or []) \
+                    == event.payload["count"]
+                assert len(event.payload.get("instance_ids") or []) \
+                    == event.payload["count"]
+
+    def test_all_kinds_within_vocabulary(self, replay_results):
+        _, all_events = replay_results
+        for event in of_kind(all_events, ev.CARD_REVEALED):
+            assert event.kind in ev.ALL_KINDS
+
+    def test_debounce_collapses_multi_reveal(self):
+        """11 simultaneous RevealedCard objects -> one aggregated event."""
+        from arenaonair.models import Event
+        burst = [Event(kind=ev.CARD_REVEALED, seat=2,
+                       payload={"name": f"Card {i}",
+                                "grp_id": 100 + i, "instance_id": i},
+                       ts=100.0 + i * 0.01, salience=2)
+                 for i in range(11)]
+        differ = EventDiffer()
+        merged = differ.debounce(burst)
+        reveals = of_kind(merged, ev.CARD_REVEALED)
+        assert len(reveals) == 1
+        agg = reveals[0]
+        assert agg.payload.get("count") == 11
+        assert len(agg.payload.get("names") or []) == 11
+        assert len(agg.payload.get("grp_ids") or []) == 11
+        assert len(agg.payload.get("instance_ids") or []) == 11
+
+    def test_single_reveal_survives_debounce_intact(self):
+        from arenaonair.models import Event
+        solo = Event(kind=ev.CARD_REVEALED, seat=1,
+                     payload={"name": "Emrakul", "grp_id": 1,
+                              "instance_id": 9}, ts=50.0, salience=2)
+        differ = EventDiffer()
+        merged = differ.debounce([solo])
+        assert len(of_kind(merged, ev.CARD_REVEALED)) == 1
+

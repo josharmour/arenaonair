@@ -356,6 +356,7 @@ class EventDiffer:
         events.extend(self.detect_trap_armed(prev, cur))
         events.extend(self.detect_trap_sprung(prev, cur))
         events.extend(self.detect_bluff(prev, cur))
+        events.extend(self.detect_card_revealed(prev, cur))
 
         base_ts = getattr(cur, "ts", None)
         stamped = []
@@ -1818,6 +1819,61 @@ class EventDiffer:
         # contract. An active-player change is not evidence of a bluff.
         return []
 
+    def detect_card_revealed(self, prev, cur):
+        """Cards revealed to the local player this window (A1).
+
+        Source of truth: GameObjectType_RevealedCard objects appearing in the
+        snapshot. The GRE creates these transient objects exactly when the
+        client shows a reveal panel to the local player (audience membership
+        is enforced client-side: annotations that exclude the local seat never
+        produce RevealedCard objects), and wipes them via
+        diffDeletedInstanceIds one state later -- so "new since prev" is the
+        whole lifecycle, no dedupe accumulator needed beyond game scope.
+
+        Payload mirrors CAST: name/grp_id/instance_id per card, plus
+        owner_seat (whose zone the cards came from) and count/names for
+        multi-card reveals. Salience HIGH: a reveal is inherently notable --
+        the opponent is showing us something.
+        """
+        if cur is None:
+            return []
+        try:
+            prev_objs = (prev.objects or {}) if prev else {}
+            cur_objs = (cur.objects or {}) if cur else {}
+            revealed = []
+            for iid, ref in cur_objs.items():
+                if (getattr(ref, "object_type", None) or "") != \
+                        "GameObjectType_RevealedCard":
+                    continue
+                if iid in prev_objs and (getattr(prev_objs[iid],
+                                                 "object_type", None) or ""
+                                         ) == "GameObjectType_RevealedCard":
+                    continue  # carried over, not new this window
+                revealed.append((iid, ref))
+            if not revealed:
+                return []
+
+            ts_base = getattr(cur, "ts", 0.0) or 0.0
+            out = []
+            for idx, (iid, ref) in enumerate(sorted(revealed)):
+                seat = (getattr(ref, "controller_seat", None)
+                        or getattr(ref, "owner_seat", None))
+                out.append(Event(
+                    kind=ev.CARD_REVEALED,
+                    seat=seat,
+                    payload={
+                        "name": getattr(ref, "name", None),
+                        "grp_id": getattr(ref, "grp_id", None),
+                        "instance_id": iid,
+                        "owner_seat": getattr(ref, "owner_seat", None),
+                    },
+                    ts=ts_base + idx * 0.01,
+                    salience=ev.SALIENCE_HIGH,
+                ))
+            return out
+        except Exception:
+            return []
+
     # ------------------------------------------------------- debounce / merge
 
     def debounce(self, events):
@@ -1876,6 +1932,34 @@ class EventDiffer:
                         continue
                     cluster2.append(event)
                 cluster = cluster2
+
+            # Multiple card reveals in one window -> one aggregated
+            # CARD_REVEALED with count/names (mirrors the land-drop rule).
+            reveals = by_kind.get(ev.CARD_REVEALED) or []
+            if len(reveals) > 1:
+                names = [e.payload.get("name") for e in reveals]
+                grp_ids = [e.payload.get("grp_id") for e in reveals]
+                inst_ids = [e.payload.get("instance_id") for e in reveals]
+                seats = [e.seat for e in reveals]
+                seat_first: Any = next((s for s in seats if s is not None),
+                                       None)
+                agg_r = Event(kind=ev.CARD_REVEALED,
+                              seat=seat_first,
+                              payload={"count": len(reveals), "names": names,
+                                       "grp_ids": grp_ids,
+                                       "instance_ids": inst_ids},
+                              ts=min(e.ts for e in reveals),
+                              salience=max(e.salience for e in reveals))
+                cluster3: list[Event] = []
+                consumed_r = False
+                for event in cluster:
+                    if event.kind == ev.CARD_REVEALED:
+                        if not consumed_r:
+                            cluster3.append(agg_r)
+                            consumed_r = True
+                        continue
+                    cluster3.append(event)
+                cluster = cluster3
 
             # cast+resolve / cast+counter merges keyed by instance id.
             casts_by_iid: dict[Any, Event] = {}

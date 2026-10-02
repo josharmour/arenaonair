@@ -521,6 +521,21 @@ TEMPLATE_POOLS = {
         # STAT-FWD (generic pressure framing)
         "Answer accounting live{pressure_clause} -- margins this slim decide games.",
     ],
+
+    ev.CARD_REVEALED: [
+        # CARD-FIRST (single reveal)
+        "{actor} reveals {card}.",
+        # COUNT-FIRST (multi-card reveal)
+        "{count} cards laid bare from {actor}'s side: {card}.",
+        # ASIDE (booth sees all framing)
+        "The booth gets a peek -- {card}, face up.",
+        # CONSEQUENCE-FIRST (information advantage)
+        "Information flash: {card} is now public knowledge.",
+        # COLOR (drama framing)
+        "Cards on the table -- literally. {card} shows itself.",
+        # STAT-FWD (source framing)
+        "Reveal check: {card}{owner_clause}.",
+    ],
 }
 
 
@@ -696,6 +711,14 @@ TEMPLATE_SHORT_POOLS = {
         "Razor thin{pressure_clause}.",
         "Answer watch live.",
         "Margins decide this.",
+    ],
+    ev.CARD_REVEALED: [
+        "{actor} reveals {card}.",
+        "{count} cards shown.",
+        "A peek: {card}.",
+        "{card}, face up.",
+        "Reveal: {card}.",
+        "Cards shown{owner_clause}.",
     ],
 }
 
