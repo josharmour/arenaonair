@@ -19,6 +19,7 @@ class BugReportLogs(logging.Handler):
     def __init__(self, *, secrets=(), max_lines=2000):
         super().__init__(logging.INFO)
         self._lines = deque(maxlen=max_lines)
+        self._report_lines = deque(maxlen=max_lines)
         self._buffer_lock = threading.RLock()
         self._secrets = tuple(s for s in secrets if s)
         self.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
@@ -35,9 +36,8 @@ class BugReportLogs(logging.Handler):
     def emit(self, record):
         try:
             message = self.format(record)
-            if (getattr(record, 'game_event_kind', None) in PRIVATE_EVENT_KINDS or
-                    any('kind=' + kind in message for kind in PRIVATE_EVENT_KINDS)):
-                message = f'{self.formatter.formatTime(record)} {record.levelname} {record.name}: [private-game commentary omitted]'
+            private = (getattr(record, 'game_event_kind', None) in PRIVATE_EVENT_KINDS or
+                       any('kind=' + kind in message for kind in PRIVATE_EVENT_KINDS))
             if any(key in message for key in ('"gameObjects"', '"deckCards"', '"greToClientMessages"')):
                 message = '[raw game data omitted]'
             message = self.redact(message)
@@ -45,12 +45,16 @@ class BugReportLogs(logging.Handler):
                 message = message[:2000] + ' [truncated]'
             with self._buffer_lock:
                 self._lines.append(message)
+                self._report_lines.append(
+                    f'{self.formatter.formatTime(record)} {record.levelname} {record.name}: [private-game commentary omitted]'
+                    if private else message)
         except Exception:
             self.handleError(record)
 
-    def text(self):
+    def text(self, *, for_report=False):
+        """Show commentary locally; omit private wording only in shared reports."""
         with self._buffer_lock:
-            return '\n'.join(self._lines)
+            return '\n'.join(self._report_lines if for_report else self._lines)
 
 
 def build_bug_report(app, logs):
@@ -82,4 +86,4 @@ def build_bug_report(app, logs):
     return logs.redact('ArenaOnAir bug report\n'
         'Recent app logs only; raw game logs, hands, decks, and credentials are excluded.\n\n'
         + json.dumps(header, indent=2, default=str)
-        + '\n\nRecent logs (up to 2,000 entries):\n' + logs.text())
+        + '\n\nRecent logs (up to 2,000 entries):\n' + logs.text(for_report=True))

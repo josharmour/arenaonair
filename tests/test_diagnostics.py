@@ -36,6 +36,9 @@ def test_report_copies_public_commentary_and_useful_status_only():
     logs.emit(record('Hidden Counterspell', game_event_kind='trap_armed'))
     logs.emit(record('speech delivery FAILED kind=hand_online text=Hidden Dragon'))
     logs.emit(record('{"gameObjects": [{"name": "Hidden card"}]}'))
+    assert 'Hidden Counterspell' in logs.text()
+    assert 'Hidden Dragon' in logs.text()
+    assert 'test-secret' not in logs.text()
     report = build_bug_report(app_stub(), logs)
     assert 'Public reaction' in report and 'am_onyx' in report
     assert 'GameStage_Play' in report and 'match-1' in report
@@ -76,10 +79,11 @@ def test_copy_button_puts_report_on_clipboard_without_stopping_broadcast(monkeyp
         assert 'Grim Tutor' in text and 'GameStage_Play' in text
         assert window.feedback.text().startswith('Copied')
         assert app.status()['state'] == 'in_match'
-        logs.emit(record('Later commentary'))
+        logs.emit(record('Later commentary', game_event_kind='llm_commentary'))
         window.refresh()
+        assert 'Later commentary' in window.log_view.toPlainText()
         window.copy_button.click()
-        assert 'Later commentary' in qt.clipboard().text()
+        assert 'Later commentary' not in qt.clipboard().text()
     finally:
         window.timer.stop()
         window.close()
