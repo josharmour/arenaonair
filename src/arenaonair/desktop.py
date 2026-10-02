@@ -27,6 +27,18 @@ LSREGISTER = ("/System/Library/Frameworks/CoreServices.framework/Frameworks/"
               "LaunchServices.framework/Support/lsregister")
 
 
+def ensure_standard_streams() -> None:
+    """Give console-free pythonw launches streams required by voice libraries."""
+    missing = [name for name in ("stdout", "stderr") if getattr(sys, name) is None]
+    if not missing:
+        return
+    log_dir = Path.home() / ".arenaonair" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    stream = (log_dir / "app.log").open("a", encoding="utf-8", buffering=1)
+    for name in missing:
+        setattr(sys, name, stream)
+
+
 def source_dir() -> Path | None:
     """Directory to put on PYTHONPATH, or None when the package is installed."""
     parent = Path(__file__).resolve().parent.parent
@@ -196,7 +208,25 @@ def install_windows(python: str, source: Path | None) -> Path:
            "AOA_WORKDIR": str(workdir), "AOA_ICON": str(icon)}
     subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
                    env=env, check=True, capture_output=True)
+    from .platform.taskbar_windows import APP_ID, set_properties
+    set_properties(shortcut=link, values={5: APP_ID})
     return link
+
+
+def configure_windows_taskbar(window) -> None:
+    """Pin the ArenaOnAir launcher and icon instead of the Python executable."""
+    from .platform.taskbar_windows import APP_ID, set_properties
+    from .config import data_dir
+    link = Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/ArenaOnAir.lnk"
+    icon = data_dir() / "ArenaOnAir.ico"
+    if not link.is_file() or not icon.is_file():
+        link = install_windows(sys.executable, source_dir())
+    set_properties(hwnd=int(window.winId()), values={
+        2: subprocess.list2cmdline([str(link)]),
+        3: f"{icon},0",
+        4: APP_NAME,
+        5: APP_ID,
+    })
 
 
 def main(argv=None) -> int:

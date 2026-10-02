@@ -14,6 +14,39 @@ from arenaonair.app import ArenaOnAirApp
 from arenaonair.config import Config, caster_name, load, resolve_booth, save_broadcast_settings
 from arenaonair.speech import SpeechQueue
 
+
+@pytest.mark.parametrize("missing", [("stdout",), ("stderr",), ("stdout", "stderr")])
+def test_console_free_launch_has_writable_streams(monkeypatch, tmp_path, missing):
+    monkeypatch.setattr(desktop.Path, "home", lambda: tmp_path)
+    original = {name: getattr(sys, name) for name in ("stdout", "stderr")}
+    with monkeypatch.context() as patch:
+        for name in missing:
+            patch.setattr(sys, name, None)
+        desktop.ensure_standard_streams()
+        stream = getattr(sys, missing[0])
+        try:
+            for name in original:
+                if name in missing:
+                    getattr(sys, name).write(f"{name}: voice ready\n")
+                else:
+                    assert getattr(sys, name) is original[name]
+            desktop.ensure_standard_streams()
+            assert getattr(sys, missing[0]) is stream
+            assert not stream.isatty()
+        finally:
+            stream.close()
+    contents = (tmp_path / ".arenaonair" / "logs" / "app.log").read_text()
+    for name in missing:
+        assert f"{name}: voice ready" in contents
+
+
+def test_console_launch_keeps_streams(monkeypatch, tmp_path):
+    monkeypatch.setattr(desktop.Path, "home", lambda: tmp_path)
+    original = (sys.stdout, sys.stderr)
+    desktop.ensure_standard_streams()
+    assert (sys.stdout, sys.stderr) == original
+    assert not (tmp_path / ".arenaonair").exists()
+
 USER_CONFIG = """\
 # ArenaOnAir on this Mac: the generative (AI) booth, two casters.
 narration_mode = "llm"

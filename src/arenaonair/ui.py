@@ -55,6 +55,7 @@ class BroadcastWindow(QWidget):
         self.logs = logs
         self.restart_requested = False
         self.setWindowTitle('ArenaOnAir')
+        self.setWindowIcon(QIcon(str(ICON_PATH)))
         self.resize(820, 720)
         outer = QVBoxLayout(self)
         self.restart_bar = QWidget()
@@ -508,6 +509,13 @@ def run_dashboard(app, logs):
     if not (sys.platform == 'darwin' and os.environ.get('ARENAONAIR_APP_BUNDLE')):
         qt_app.setWindowIcon(QIcon(str(ICON_PATH)))
     window = BroadcastWindow(app, logs)
+    if sys.platform == 'win32':
+        try:
+            from .desktop import configure_windows_taskbar
+            configure_windows_taskbar(window)
+        except OSError:
+            import logging
+            logging.getLogger(__name__).exception('Could not configure the Windows taskbar icon')
     old_handler = signal.getsignal(signal.SIGINT)
     signal.signal(signal.SIGINT, lambda *_: qt_app.quit())
     window.show()
