@@ -627,11 +627,12 @@ class TestLifecycle:
         assert starts[0].payload["match_id"] == "abc-123"
         assert starts[0].salience == ev.SALIENCE_MUST_SPEAK
 
-    def test_match_end_hooks_room_state_completed(self):
+    @pytest.mark.parametrize('kind', ['room_state.completed', 'room_state.matchcompleted'])
+    def test_match_end_hooks_room_state_completed(self, kind):
         d = EventDiffer()
         prev = make_state(1)
         cur = make_state(2)
-        msg_done = GreMessage(kind="room_state.completed", payload={}, ts=0.0)
+        msg_done = GreMessage(kind=kind, payload={}, ts=0.0)
         ends = of_kind(d.diff(prev, cur, [msg_done]), ev.MATCH_END)
         assert len(ends) == 1
 

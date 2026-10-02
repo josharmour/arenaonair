@@ -1102,11 +1102,7 @@ class EventDiffer:
         return winner, reason
 
     def detect_match_start_end(self, prev, cur):
-        """match_start on match_id appearing/changing; match_end TODO.
-
-        match_end hooks room_state.completed which does not occur in the
-        recorded fixtures yet -- forward-compatible path only.
-        """
+        """Detect match identity changes and Arena's completed-room messages."""
         try:
             out = []
             ts_base = getattr(cur, "ts", 0.0) or 0.0
@@ -1124,9 +1120,8 @@ class EventDiffer:
 
             for msg in self._window_msgs:
                 kind = getattr(msg, "kind", "") or ""
-                if kind == "room_state.completed":
-                    # TODO: verify payload shape once completed-room fixtures
-                    # exist; emit conservatively with no payload extras.
+                if kind in ("room_state.completed", "room_state.matchcompleted"):
+                    # Completion is sufficient; game results come from GRE.
                     out.append(Event(kind=ev.MATCH_END,
                                      seat=None,
                                      payload={},
