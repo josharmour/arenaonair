@@ -69,6 +69,36 @@ def run(b, event=None, snap=None):
     return work
 
 
+def test_trial_waits_without_request_or_repeated_warning(caplog):
+    import logging
+    from arenaonair.connection import TRIAL_URL
+    b, q, clock, writer, _ = setup_booth(llm_base_url=TRIAL_URL)
+    with caplog.at_level(logging.INFO):
+        work = run(b, snap=snapshot(match_meta=MatchMeta(None, None, {})))
+        b.process(work)
+    assert not writer.contexts
+    assert not b.busy
+    assert b.state == 'trial_waiting_match'
+    assert len([r for r in caplog.records if 'trial ready' in r.getMessage()]) == 1
+    run(b)
+    assert writer.contexts
+
+
+def test_started_speech_survives_age_and_public_state_changes():
+    b, q, clock, writer, _ = setup_booth()
+    run(b)
+    current = q.pop_best()
+    item = b.tracked[current.uid]
+    item['deps']['state:test'] = 'old public state'
+    clock.value += b.config.llm_max_age + 1
+    assert not b.valid_for_delivery(current)
+    assert b.interruption_reason(current) is None
+    item['deps']['private:hand:1'] = 'old hand'
+    assert b.interruption_reason(current) == 'private_facts_changed'
+    b.epoch += 1
+    assert b.interruption_reason(current) == 'match_or_game_changed'
+
+
 def test_single_source_shared_history_only_after_success():
     b, q, clock, w, pump = setup_booth()
     run(b)
@@ -381,8 +411,9 @@ def test_copied_reports_omit_generated_game_text():
         'Speaking color_analyst: PRIVATE CARD IN HAND', (), None)
     record.game_event_kind = 'llm_commentary'
     logs.emit(record)
-    assert 'PRIVATE CARD' not in logs.text()
-    assert 'omitted' in logs.text()
+    assert 'PRIVATE CARD' in logs.text()
+    assert 'PRIVATE CARD' not in logs.text(for_report=True)
+    assert 'omitted' in logs.text(for_report=True)
 
 
 def test_life_change_cannot_be_explained_as_tutor_payment_even_if_auditor_agrees():
@@ -578,7 +609,8 @@ def test_unspoken_lines_reach_the_local_log_but_not_copied_reports(caplog):
     unspoken = [r for r in caplog.records if 'Opt resolves.' in r.getMessage()]
     assert [r.getMessage().split(' (')[0] for r in unspoken] == ['LLM booth rewriting', 'LLM booth did not speak']
     assert all(r.game_event_kind == 'llm_commentary' for r in unspoken)
-    assert 'Opt resolves' not in logs.text() and 'unsupported_resolution' in logs.text()
+    assert 'Opt resolves' in logs.text() and 'unsupported_resolution' in logs.text()
+    assert 'Opt resolves' not in logs.text(for_report=True)
 
 
 def test_unknown_or_truncated_public_zone_never_claims_complete_board():

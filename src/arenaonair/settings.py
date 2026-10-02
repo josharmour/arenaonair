@@ -77,7 +77,7 @@ SETTINGS: tuple[Setting, ...] = (
             help="With shared logs, lets both hands on air: the listener isn't one of the players."),
     Setting("history_enabled", "Your game", "Remember past matches", "bool", section="history", toml_key="enabled",
             restart=True),
-    Setting("auto_recap", "Your game", "Write a recap after each game", "bool", section="history"),
+    Setting("auto_recap", "Your game", "Save recaps and speak the whole-match summary", "bool", section="history"),
     # -- streaming --------------------------------------------------------------
     Setting("stream_enabled", "Streaming", "I'm streaming", "bool", section="stream", toml_key="enabled"),
     Setting("stream_delay_s", "Streaming", "Stream delay (seconds)", "float", section="stream", toml_key="delay_s",

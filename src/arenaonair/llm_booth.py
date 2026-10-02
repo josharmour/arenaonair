@@ -1028,6 +1028,14 @@ class GenerativeBooth:
         start = self.now()
         output = None
         try:
+            from .connection import TRIAL_URL
+            if self.config.llm_base_url.rstrip('/') == TRIAL_URL and not work.match_id:
+                with self.lock:
+                    changed = self.state != 'trial_waiting_match'
+                    self.state = 'trial_waiting_match'
+                if changed:
+                    logger.info('LLM booth: %s', describe_state('trial_waiting_match'))
+                return
             if hasattr(self.client, 'set_match'):
                 self.client.set_match(work.match_id)
             self._enrich(work.context)
@@ -1303,6 +1311,20 @@ class GenerativeBooth:
             if item:
                 item['status'] = reason
                 self.counts[reason] += 1
+
+    def interruption_reason(self, utt):
+        """Once speech starts, routine board updates and age do not cut it off."""
+        if utt.kind != 'llm_commentary':
+            return None
+        with self.lock:
+            self._refresh_private()
+            item = self.tracked.get(utt.uid)
+            if self.closed or not item or item['epoch'] != self.epoch:
+                return 'match_or_game_changed'
+            if any(self.facts.get(k) != v for k, v in item['deps'].items()
+                   if k.startswith('private:')):
+                return 'private_facts_changed'
+            return None
 
     def valid_for_delivery(self, utt):
         if utt.kind != 'llm_commentary':

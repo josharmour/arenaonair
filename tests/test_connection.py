@@ -130,6 +130,39 @@ def test_trial_startup_log_is_primed_before_generating(tmp_path, monkeypatch):
         app.stop()
 
 
+def test_trial_restart_restores_match_id_before_latest_diff(tmp_path, monkeypatch):
+    import json
+    from arenaonair.app import ArenaOnAirApp
+    from arenaonair.gre_parser import parse_line_all
+    from arenaonair.state_builder import GameStateBuilder
+    path = tmp_path / 'Player.log'
+    def envelope(state):
+        return json.dumps({'greToClientEvent': {'greToClientMessages': [
+            {'type': 'GREMessageType_GameStateMessage', 'gameStateMessage': state}]}})
+    path.write_text('\n'.join([
+        '[UnityCrossThreadLogger] : GreToClientEvent',
+        envelope({'type': 'GameStateType_Full', 'gameStateId': 1,
+                  'gameInfo': {'matchID': 'real-match', 'gameNumber': 1}}),
+        '[UnityCrossThreadLogger] : GreToClientEvent',
+        envelope({'type': 'GameStateType_Diff', 'gameStateId': 2, 'prevGameStateId': 1}),
+        '']))
+    app = ArenaOnAirApp(Config(llm_base_url=connection.TRIAL_URL, log_path=str(path),
+                              carddb_path=str(tmp_path / 'cards'), history_enabled=False), dry_run=True)
+    monkeypatch.setattr('threading.Thread.start', lambda self: None)
+    monkeypatch.setattr('threading.Thread.join', lambda self, **kw: None)
+    try:
+        app.start()
+        builder, snap = GameStateBuilder(), None
+        for ts, raw in app.watcher.poll():
+            for message in parse_line_all(ts, raw):
+                snap = builder.apply(snap, message) or snap
+        assert snap.match_meta.match_id == 'real-match'
+        assert snap.gre_state_id == 2
+        assert snap.chain_valid
+    finally:
+        app.stop()
+
+
 def test_provider_keys_cannot_overwrite_another_endpoints_credential(tmp_path):
     first = connection.provider_key_path(tmp_path, 'https://first.example/v1')
     second = connection.provider_key_path(tmp_path, 'https://second.example/v1')

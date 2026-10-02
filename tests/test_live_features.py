@@ -125,6 +125,42 @@ MATCH = {'match_id': 'm1', 'local_seat': 1, 'names': {'1': 'Alice', '2': 'Bob'},
         {'kind': 'game_end', 'seat': None, 'turn': 7, 'data': {'winning_team_id': 1}}]}]}
 
 
+def test_automatic_recap_covers_match_once_and_survives_end_updates(tmp_path, monkeypatch):
+    from copy import deepcopy
+    from arenaonair.app import ArenaOnAirApp
+    app = ArenaOnAirApp(Config(data_dir=str(tmp_path)), dry_run=True)
+    match = deepcopy(MATCH)
+    match['match_id'] = 'm'
+    match['games'].append(deepcopy(match['games'][0]))
+    for i, game in enumerate(match['games'], 1):
+        game.update(game_id=str(i), closed=True)
+    app.recorder.match = match
+    app.recorder._game = match['games'][-1]
+    app._match_id = 'm'
+    current = snap(game_id=2, match_meta=MatchMeta('m', None, {1: 'Alice', 2: 'Bob'}))
+    monkeypatch.setattr(app, '_events_for', lambda *args: [])
+    try:
+        app._trial_priming = True
+        app._speak_completed_match('m')
+        assert not app.queue.pending()
+        app._trial_priming = False
+        app._speak_completed_match('m')
+        lines = list(app.queue.pending())
+        text = ' '.join(u.text for u in lines)
+        assert 'Game 1' in text and 'Game 2' in text and 'Match score' in text
+        app._speak_completed_match('m')
+        assert list(app.queue.pending()) == lines
+        app._consume_snapshot(current, current, [])
+        assert app._recap_active
+        assert app.queue.pop_best().kind == 'recap'
+        newer = replace(current, game_id=3)
+        app._consume_snapshot(current, newer, [])
+        assert not app._recap_active
+        assert app.queue.pop_best() is None
+    finally:
+        app.stop()
+
+
 def test_deterministic_recap_uses_only_recorded_facts():
     g = highlights(MATCH)[0]
     assert g['swing'] == {'turn': 6, 'player': 'Bob', 'lost': 9, 'from': 18, 'to': 9}

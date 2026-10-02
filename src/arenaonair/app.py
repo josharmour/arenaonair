@@ -291,7 +291,12 @@ class ArenaOnAirApp:
             self.watcher = MultiLogWatcher([p for p in (self.config.log_player1, self.config.log_player2) if p],
                                            anchor=False)
         else:
-            self.watcher = LogWatcher(path=self.config.log_path, anchor=self.config.anchor)
+            from .connection import TRIAL_URL
+            # A late GRE diff may omit the match ID and full board baseline.
+            # Trial startup silently primes existing traffic in _watch_loop;
+            # read that baseline too so a mid-match restart can reconnect.
+            trial = self.config.llm_base_url.rstrip('/') == TRIAL_URL
+            self.watcher = LogWatcher(path=self.config.log_path, anchor=self.config.anchor and not trial)
 
         self._speech_thread = threading.Thread(
             target=self._speech_loop,
@@ -366,7 +371,23 @@ class ArenaOnAirApp:
         result = write_recap(match, config_mod.data_dir(self.config) / "recaps", booth=self.booth)
         self.last_recap = result["markdown"]
         self._last_recap_lines = result["lines"]
-        logger.info("Recap written: %s (arenaonair recap --audio for a spoken version)", result["markdown"])
+        logger.info("Recap written: %s", result["markdown"])
+
+    def _speak_completed_match(self, match_id):
+        if (not self.config.auto_recap or getattr(self, '_trial_priming', False)
+                or self._stop_event.is_set() or not self.recorder):
+            return
+        if getattr(self, '_auto_recapped_match', None) == match_id:
+            return
+        match = self.recorder.public_match()
+        games = match.get('games') or []
+        if match.get('match_id') != match_id or not games or not self._between_games():
+            return
+        # Build from every recorded game, not merely the last play or dialogue.
+        self._game_saved(match, games[-1])
+        if self.speak_last_recap():
+            self._auto_recapped_match = match_id
+            logger.info('Speaking automatic whole-match recap (%d games)', len(games))
 
     def speak_last_recap(self) -> int:
         """Voice the latest recap between games; returns lines queued."""
@@ -404,6 +425,7 @@ class ArenaOnAirApp:
         scope = f"{prefix}-{self._recap_seq}"
         self.queue.set_active_match(scope)
         self._recap_active = True
+        self._recap_game = (self._match_id, (getattr(self.recorder, '_game', None) or {}).get('game_id'))
         anchor = None
         for i, line in enumerate(lines):
             analyst = line["role"] == "color_analyst" and self.booth_mode == "dual"
@@ -765,9 +787,13 @@ class ArenaOnAirApp:
                 removed,
             )
 
-        if getattr(self, "_recap_active", False):
+        if (getattr(self, "_recap_active", False) and
+                (snap_match_id, str(snap.game_id)) != getattr(self, '_recap_game', None)):
             # Live play resumed: any unspoken recap lines go stale now.
             self._recap_active = False
+            current = getattr(self.pump, 'current', None)
+            if current is not None and current.kind == 'recap':
+                self._interrupt_commentary(current, 'live_game_started')
             self.queue.set_active_match(snap_match_id or self._match_id)
         events = self._events_for(snap, backlog, prev_snap)
         if self.llm:
@@ -819,13 +845,18 @@ class ArenaOnAirApp:
                 if self._state == AppState.WATCHING:
                     self._state = AppState.IN_MATCH
 
+        if any(event.kind == ev.MATCH_END for event in events):
+            self._speak_completed_match(snap_match_id)
+
 
     def _invalidate_analysis(self, snap):
         if self.llm:
             self.llm.observe(snap)
             current = getattr(self.pump, "current", None)
-            if current is not None and not self.llm.valid_for_delivery(current):
-                self.pump.speaker.cancel()
+            if current is not None:
+                reason = self.llm.interruption_reason(current)
+                if reason:
+                    self._interrupt_commentary(current, reason)
             return
         # Current-state analysis expires when its evidence changes. A reply
         # reacting to a completed public play remains valid across GRE ticks.
@@ -892,9 +923,17 @@ class ArenaOnAirApp:
         events.extend(self.story.update(snap))
         return events
 
+    def _interrupt_commentary(self, current, reason):
+        logger.info('Interrupting commentary uid=%s reason=%s text=%r',
+                    current.uid, reason, current.text,
+                    extra={'game_event_kind': current.kind})
+        self.pump.speaker.cancel()
+
     def _handle_event(self, event, snap, previous_match_id=None, tempo="normal") -> None:
         """Gate -> render -> enqueue one event (with end-of-game sealing)."""
         if getattr(self, '_trial_priming', False):
+            return
+        if getattr(self, '_recap_active', False):
             return
         if self.llm and event.kind == ev.TURN_START:
             self.llm.turn_started(snap)  # a game-read moment, whatever the verbosity
@@ -904,9 +943,12 @@ class ArenaOnAirApp:
             self.queue.set_active_match(snap.match_meta.match_id)
             self.llm.submit(event, snap)
             current = getattr(self.pump, "current", None)
-            if current is not None and (not self.llm.valid_for_delivery(current) or
-                    event.salience >= 3 and current.salience < 3):
-                self.pump.speaker.cancel()
+            if current is not None:
+                reason = self.llm.interruption_reason(current)
+                if not reason and event.salience >= 3 and current.salience < 3:
+                    reason = f'urgent_event:{event.kind}'
+                if reason:
+                    self._interrupt_commentary(current, reason)
             return
         if event.salience < ev.SALIENCE_HIGH and event.kind in FOCUS_SKIPS.get(self.config.commentary_focus, ()):
             return
@@ -1134,6 +1176,8 @@ SUBCOMMANDS = {
 
 def main(argv=None) -> int:
     """CLI entry point. Returns 0 on success."""
+    from .desktop import ensure_standard_streams
+    ensure_standard_streams()
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] in SUBCOMMANDS:
         import importlib
