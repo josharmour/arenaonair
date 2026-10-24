@@ -73,6 +73,11 @@ class ConnectionDialog(QDialog):
         subscribe = QPushButton("Subscribe / get my Patreon key")
         subscribe.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(api.SUBSCRIBE_URL)))
         row.addWidget(subscribe)
+        from .support import contact_josh
+
+        support = QPushButton("Contact Josh…")
+        support.clicked.connect(lambda: contact_josh(self))
+        row.addWidget(support)
         self.connect_button = QPushButton("Connect and restart")
         self.connect_button.clicked.connect(self._connect)
         row.addWidget(self.connect_button)

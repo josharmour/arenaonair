@@ -101,6 +101,11 @@ class BroadcastWindow(QWidget):
         self.copy_button.setObjectName('copy_bug_report')
         self.copy_button.clicked.connect(self.copy_bug_report)
         layout.addWidget(self.copy_button)
+        from .support import contact_josh
+
+        support = QPushButton('Contact Josh…')
+        support.clicked.connect(lambda: contact_josh(self))
+        layout.addWidget(support)
         self.feedback = QLabel('Copy recent commentary and diagnostics to paste into your chat.')
         self.feedback.setWordWrap(True)
         layout.addWidget(self.feedback)
