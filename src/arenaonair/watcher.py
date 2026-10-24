@@ -44,6 +44,8 @@ class LogWatcher:
     traffic (": Match to " / ": GreToClientEvent") and start emitting from
     there instead of replaying megabytes of boot noise.
     anchor_window_lines -- backward-scan bound in lines (default ~2000).
+    restore -- silently bootstrap existing bytes from the latest complete full
+    state; poll().priming separates them from subsequently appended live bytes.
     """
 
     def __init__(
@@ -52,11 +54,16 @@ class LogWatcher:
         *,
         anchor: bool = True,
         anchor_window_lines: int = _DEFAULT_ANCHOR_WINDOW_LINES,
+        restore: bool = False,
     ) -> None:
 
         self._explicit_path = Path(path) if path is not None else None
         self._anchor_enabled = anchor
         self._anchor_window_lines = max(1, int(anchor_window_lines))
+        self._restore = restore
+        self._restore_end = 0
+        self._restore_prefix: list[tuple[float, str]] = []
+        self.priming = False  # the most recent poll contains only pre-launch bytes
 
         self._fh: io.BufferedReader | None = None
         self._opened_path: Path | None = None
@@ -99,8 +106,11 @@ class LogWatcher:
                 return out
 
         assert self._fh is not None
+        self.priming = self._offset < self._restore_end
         data = self._read_available()
         if data:
+            out.extend(self._restore_prefix)
+            self._restore_prefix = []
             out.extend(self._consume(data))
             return out
 
@@ -162,9 +172,17 @@ class LogWatcher:
             first_time = target not in self._anchored_generations
 
             start = 0
-            if size > 0 and first_time and self._anchor_enabled:
+            if size > 0 and first_time and self._restore:
+                start = self._restore_offset(fh, size)
+                self._restore_end = size
+                self._anchored_generations.add(target)
+            elif size > 0 and first_time and self._anchor_enabled:
                 start = self._anchor_offset(fh)
                 self._anchored_generations.add(target)
+
+            if not first_time:
+                self._restore_end = 0
+                self._restore_prefix = []
 
             fh.seek(start)
             self._fh = fh
@@ -210,6 +228,8 @@ class LogWatcher:
                 self._fh.seek(0)
                 self._offset = 0
                 self._pending.clear()
+                self._restore_end = 0
+                self._restore_prefix = []
                 return True
             except OSError:
                 return False
@@ -221,7 +241,12 @@ class LogWatcher:
         chunks: list[bytes] = []
         while True:
             try:
-                chunk = self._fh.read(_READ_CHUNK)
+                # Freeze the bootstrap boundary: traffic appended while scanning
+                # belongs to the next, live poll, even if it arrives mid-read.
+                remaining = self._restore_end - self._fh.tell() if self.priming else _READ_CHUNK
+                if remaining <= 0:
+                    break
+                chunk = self._fh.read(min(_READ_CHUNK, remaining))
             except OSError:
                 break
             if not chunk:
@@ -261,6 +286,75 @@ class LogWatcher:
             self._pending.clear()
             self._pending.extend(remainder)
         return lines
+
+    def _restore_offset(self, fh: io.BufferedReader, end: int) -> int:
+        """Latest full baseline, with its preceding room/connection metadata.
+
+        Scan a fixed existing-file boundary using bounded line memory. Keep
+        metadata separately so a reconnect's full state need not replay every
+        earlier turn. A new match/game without a full state must NOT inherit
+        a previous game's baseline. No network or commentary happens here.
+        """
+        from .gre_parser import parse_line_all
+        fh.seek(0)
+        start = 0
+        scope = (None, None)
+        metadata = {}
+        pending_connect = None
+        prefix = []
+        while fh.tell() < end:
+            offset = fh.tell()
+            raw = fh.readline(end - offset)
+            if not raw.endswith(b'\n'):
+                break
+            text = raw.decode('utf-8', errors='replace').rstrip('\r\n')
+            for msg in parse_line_all(0, text):
+                if msg.kind.startswith('room_state'):
+                    room = msg.payload.get('gameRoomConfig') or {}
+                    if not isinstance(room, dict):
+                        continue
+                    match = room.get('matchId')
+                    if match and match != scope[0]:
+                        scope = (match, None)
+                        metadata.clear()
+                        # Arena sends ConnectResp immediately BEFORE the new
+                        # room record. Retain only that new connection, never
+                        # the previous match's seat/deck metadata.
+                        if pending_connect is not None:
+                            metadata['connect'] = pending_connect
+                        start, prefix = offset, sorted(set(metadata.values()))
+                    metadata['room'] = (offset, text)
+                    pending_connect = None
+                elif msg.kind == 'gre.ConnectResp':
+                    metadata['connect'] = pending_connect = (offset, text)
+                elif 'GameStateMessage' in msg.kind:
+                    state = msg.payload.get('gameStateMessage') or {}
+                    if not isinstance(state, dict):
+                        continue
+                    state = state.get('gameStateMessage', state)
+                    if not isinstance(state, dict):
+                        continue
+                    info = state.get('gameInfo') or {}
+                    if not isinstance(info, dict):
+                        continue
+                    new_scope = (info.get('matchID') or info.get('matchId') or scope[0],
+                                 info.get('gameNumber', scope[1]))
+                    if new_scope != scope:
+                        if scope[0] and new_scope[0] != scope[0]:
+                            metadata.clear()
+                            if pending_connect is not None:
+                                metadata['connect'] = pending_connect
+                        start = offset
+                        prefix = sorted(set(metadata.values()))
+                        scope = new_scope
+                    if (state.get('type') == 'GameStateType_Full'
+                            and info.get('gameNumber') is not None
+                            and all(isinstance(state.get(k), list) for k in ('zones', 'gameObjects', 'players'))):
+                        start = offset
+                        prefix = sorted(set(metadata.values()))
+                    pending_connect = None
+        self._restore_prefix = [(time.time(), text) for offset, text in prefix if offset < start]
+        return start
 
     def _anchor_offset(self, fh: io.BufferedReader) -> int:
 

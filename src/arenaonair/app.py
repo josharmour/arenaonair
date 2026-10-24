@@ -292,11 +292,11 @@ class ArenaOnAirApp:
                                            anchor=False)
         else:
             from .connection import TRIAL_URL
-            # A late GRE diff may omit the match ID and full board baseline.
-            # Trial startup silently primes existing traffic in _watch_loop;
-            # read that baseline too so a mid-match restart can reconnect.
+            # Every live provider needs a full baseline before late GRE diffs.
+            # Existing bytes restore state silently; --once remains a replay.
             trial = self.config.llm_base_url.rstrip('/') == TRIAL_URL
-            self.watcher = LogWatcher(path=self.config.log_path, anchor=self.config.anchor and not trial)
+            self.watcher = LogWatcher(path=self.config.log_path, anchor=self.config.anchor and not trial,
+                                      restore=not self.once_mode)
 
         self._speech_thread = threading.Thread(
             target=self._speech_loop,
@@ -698,9 +698,10 @@ class ArenaOnAirApp:
                 continue
 
             idle_polls = 0
-            # Prime state from the existing log without spending a trial match on
-            # old traffic. Only subsequent appended activity can request a line.
-            self._trial_priming = trial_first_batch or (self.once_mode and self.config.llm_base_url.rstrip('/') == TRIAL_URL)
+            # Every provider primes existing bytes silently. The watcher freezes
+            # that byte boundary, so concurrent appends are handled live next poll.
+            self._trial_priming = (getattr(watcher, 'priming', trial_first_batch)
+                                   or (self.once_mode and self.config.llm_base_url.rstrip('/') == TRIAL_URL))
             for item in lines:
               try:
                 if self.fusion is None:
@@ -828,6 +829,12 @@ class ArenaOnAirApp:
 
         if self.overlay is not None:
             self.overlay.update(snap, hole_cards=self.hole_cards)
+        if getattr(self, '_trial_priming', False):
+            # Restore the differ/story/booth state, but do not record historical
+            # events as a new match, write recaps, or request/speak old lines.
+            self._match_id = snap_match_id
+            self.queue.set_active_match(snap_match_id)
+            return
         for event in events:
             if self.recorder is not None:
                 self.recorder.observe(event, snap)

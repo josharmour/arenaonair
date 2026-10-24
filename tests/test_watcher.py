@@ -335,3 +335,159 @@ class TestCloseAndReuse:
         w = LogWatcher(path=log, anchor=False)
         w.poll()
         w.close()
+
+
+class TestRestoreBeforeLive:
+    @staticmethod
+    def state(gid, *, full=False, match='m', game=1, life=20):
+        import json
+        return json.dumps({'greToClientEvent': {'greToClientMessages': [
+            {'type': 'GREMessageType_GameStateMessage', 'gameStateMessage': {
+                'type': 'GameStateType_Full' if full else 'GameStateType_Diff',
+                'gameStateId': gid, 'prevGameStateId': gid - 1,
+                'gameInfo': {'matchID': match, 'gameNumber': game, 'stage': 'GameStage_Playing'},
+                'zones': [], 'gameObjects': [],
+                'players': [{'systemSeatNumber': 1, 'lifeTotal': life}],
+                'turnInfo': {'turnNumber': gid, 'activePlayer': 1}}}]}})
+
+    @staticmethod
+    def fold(lines):
+        from arenaonair.gre_parser import parse_line_all
+        from arenaonair.state_builder import GameStateBuilder
+        builder, snap = GameStateBuilder(), None
+        for ts, raw in lines:
+            for msg in parse_line_all(ts, raw):
+                snap = builder.apply(snap, msg) or snap
+        return snap
+
+    @pytest.mark.parametrize('connect_first', [False, True])
+    def test_latest_full_and_metadata_restore_without_old_turns(self, tmp_path, connect_first):
+        import json
+        room = json.dumps({'matchGameRoomStateChangedEvent': {'gameRoomInfo': {
+            'stateType': 'MatchGameRoomStateType_Playing', 'gameRoomConfig': {
+                'matchId': 'm', 'reservedPlayers': [{'systemSeatId': 1, 'playerName': 'Alice'}]}}}})
+        connect = json.dumps({'greToClientEvent': {'greToClientMessages': [
+            {'type': 'GREMessageType_ConnectResp', 'systemSeatIds': [1]}]}})
+        p = tmp_path / 'Player.log'
+        p.write_text('\n'.join(([connect, room] if connect_first else [room, connect]) + [self.state(1, full=True), self.state(2),
+                                self.state(10, full=True), self.state(11, life=17)]) + '\n')
+        w = LogWatcher(p, restore=True)
+        try:
+            batch = w.poll()
+            assert w.priming and len(batch) == 4  # metadata plus latest baseline/diff
+            snap = self.fold(batch)
+            assert snap.chain_valid and snap.gre_state_id == 11
+            assert snap.local_seat == 1 and snap.match_meta.player_names == {1: 'Alice'}
+            assert snap.players[1].life == 17
+            _write(p, self.state(12, life=16) + '\n')
+            assert len(w.poll()) == 1 and not w.priming
+        finally:
+            w.close()
+
+    @pytest.mark.parametrize('scope', [{'match': 'new'}, {'game': 2}])
+    def test_new_scope_without_baseline_never_inherits_old_state(self, tmp_path, scope):
+        p = tmp_path / 'Player.log'
+        p.write_text(self.state(1, full=True) + '\n' + self.state(2, **scope) + '\n')
+        w = LogWatcher(p, restore=True)
+        try:
+            snap = self.fold(w.poll())
+            assert not snap.chain_valid
+            assert snap.match_meta.match_id == scope.get('match', 'm')
+            assert snap.game_id == scope.get('game', 1)
+        finally:
+            w.close()
+
+    def test_append_during_scan_is_live_and_partial_line_is_not_lost(self, tmp_path, monkeypatch):
+        p = tmp_path / 'Player.log'
+        p.write_text(self.state(1, full=True) + '\n')
+        w = LogWatcher(p, restore=True)
+        scan = w._restore_offset
+        def append(fh, end):
+            offset = scan(fh, end)
+            _write(p, self.state(2) + '\n')
+            return offset
+        monkeypatch.setattr(w, '_restore_offset', append)
+        try:
+            assert len(w.poll()) == 1 and w.priming
+            assert len(w.poll()) == 1 and not w.priming
+            _write(p, self.state(3)[:20])
+            assert w.poll() == []
+            _write(p, self.state(3)[20:] + '\n')
+            assert len(w.poll()) == 1
+        finally:
+            w.close()
+
+    def test_empty_at_launch_does_not_suppress_first_live_event(self, tmp_path):
+        p = tmp_path / 'Player.log'
+        p.write_text('')
+        w = LogWatcher(p, restore=True)
+        try:
+            assert w.poll() == [] and not w.priming
+            _write(p, self.state(1, full=True) + '\n')
+            assert len(w.poll()) == 1 and not w.priming
+        finally:
+            w.close()
+
+    def test_malformed_startup_payloads_do_not_abort_reconstruction(self, tmp_path):
+        import json
+        p = tmp_path / 'Player.log'
+        malformed = [json.dumps({'greToClientEvent': {'greToClientMessages': [
+            {'type': 'GREMessageType_GameStateMessage', 'gameStateMessage': body}]}})
+            for body in ([1], {'gameInfo': [1]}, {'gameStateMessage': [1]})]
+        p.write_text('\n'.join(malformed + [self.state(1, full=True)]) + '\n')
+        w = LogWatcher(p, restore=True)
+        try:
+            assert self.fold(w.poll()).chain_valid
+        finally:
+            w.close()
+
+    def test_partial_full_retains_required_earlier_baseline(self, tmp_path):
+        import json
+        first = json.loads(self.state(1, full=True))
+        first['greToClientEvent']['greToClientMessages'][0]['gameStateMessage']['gameObjects'] = [
+            {'instanceId': 50, 'grpId': 10, 'type': 'GameObjectType_Card', 'zoneId': 1}]
+        partial = {'greToClientEvent': {'greToClientMessages': [
+            {'type': 'GREMessageType_GameStateMessage', 'gameStateMessage': {
+                'type': 'GameStateType_Full', 'gameStateId': 2,
+                'gameInfo': {'matchID': 'm', 'gameNumber': 1}}}]}}
+        p = tmp_path / 'Player.log'
+        p.write_text(json.dumps(first) + '\n' + json.dumps(partial) + '\n')
+        w = LogWatcher(p, restore=True)
+        try:
+            snap = self.fold(w.poll())
+            assert snap.chain_valid and snap.gre_state_id == 2 and 50 in snap.objects
+        finally:
+            w.close()
+
+    def test_truncation_after_restore_is_live(self, tmp_path):
+        p = tmp_path / 'Player.log'
+        p.write_text(self.state(1, full=True) + '\n' + 'noise\n' * 20)
+        w = LogWatcher(p, restore=True)
+        try:
+            w.poll()
+            p.write_text('')
+            assert w.poll() == []
+            _write(p, self.state(1, full=True, match='next') + '\n')
+            assert not w.priming
+            snap = self.fold(w.poll())
+            assert snap.match_meta.match_id == 'next' and not w.priming
+        finally:
+            w.close()
+
+
+    def test_new_match_without_connect_does_not_inherit_previous_seat(self, tmp_path):
+        import json
+        def room(match):
+            return json.dumps({'matchGameRoomStateChangedEvent': {'gameRoomInfo': {
+                'stateType': 'MatchGameRoomStateType_Playing', 'gameRoomConfig': {'matchId': match}}}})
+        connect = json.dumps({'greToClientEvent': {'greToClientMessages': [
+            {'type': 'GREMessageType_ConnectResp', 'systemSeatIds': [1]}]}})
+        p = tmp_path / 'Player.log'
+        p.write_text('\n'.join([connect, room('old'), room('new'), self.state(1, full=True, match='new')]) + '\n')
+        w = LogWatcher(p, restore=True)
+        try:
+            snap = self.fold(w.poll())
+            assert snap.match_meta.match_id == 'new' and snap.chain_valid
+            assert snap.local_seat is None
+        finally:
+            w.close()

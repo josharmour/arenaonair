@@ -73,6 +73,17 @@ parameters described below. `ARENAONAIR_API_KEY` can replace the credential file
 CLI flags override those settings. Keep keys out of CLI arguments and source
 control. Without a configured URL, `auto` uses the built-in scripted booth.
 
+## Mid-game startup
+
+For the normal single-log live path, every provider silently restores the latest
+complete full state plus its room/connection metadata and subsequent diffs before
+narrating new activity. Existing bytes cannot trigger model requests, speech,
+history entries, or recaps. The startup byte boundary is fixed before scanning, so
+plays appended during reconstruction remain live on the next poll. Match/game
+boundaries cannot inherit an older game's baseline; if the log lacks a usable
+baseline, private knowledge remains unavailable. `--once` retains explicit replay
+behavior. This does not change shared-log or relay startup semantics.
+
 ## Backend and card data
 
 Development validation used a GLM gateway advertising `glm-5.3-flash` on
@@ -90,8 +101,12 @@ chat completions with JSON-schema output and must be evaluated separately.
 Rules are read from the local card cache. Its builder now retains Scryfall oracle
 text, including separately labelled faces. Existing caches without rules still
 work, with rules explicitly unknown. Installed Arena data remains the fallback
-for missing identities; an exact-name cache match can supply rules for that
-printing. No network card lookup runs in the ingestion or speech thread.
+for missing identities and now also supplies exact card-specific localized ability
+text. The card's own ability TextIds take precedence over generic ability text;
+known display tags and mana symbols are normalized without dropping rules clauses.
+Missing clauses, unknown substitutions/markup, or incompatible schemas leave rules
+unknown. An exact-name cache match remains a fallback. No runtime card download is
+needed for installed cards such as Ferocity of the Hunt.
 
 ```bash
 python3 -m tools.build_carddb
@@ -259,7 +274,13 @@ by this limit. Calls are asked to stay under 18 words, and to shrink to one line
 silence while earlier lines are still waiting. HTTP requests time out after twelve seconds. Transport failures back off
 up to 30 seconds and drop pending work. Match/game epochs, cited state facts,
 private-context freshness, spoken-history changes, and shutdown invalidate work.
-Routine unrelated GRE ticks do not expire a public observation.
+Routine unrelated GRE ticks do not expire a public observation. Freshness is
+tracked per line: a stale analyst tail no longer discards a still-valid opening
+call. Only a contiguous valid prefix may survive, under the same citation and
+factual checks; a handoff question retains its answer's dependencies. Changes to
+another player's supplied private context still invalidate the entire exchange.
+Observed combat events carry confirmed participant names/types and counts so the
+writer and auditor can use that evidence without inferring it from a later board.
 
 Every exchange turn depends on successful playback of the previous one. Queue
 expiry, pruning, failure, cancellation, or a missing anchor cascades through all
