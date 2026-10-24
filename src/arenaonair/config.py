@@ -115,6 +115,9 @@ class Config:
     verbosity: str = "balanced"
     tts_platform: str | None = None
     tts_chains: dict | None = None
+    tts_engines: dict | None = None       # per-engine ctor kwargs, e.g. [tts_engines.chatterbox]
+    tts_routing: dict | None = None       # hype-engine routing knobs (speech.HYPE_*)
+    hype_voice: bool = True               # energetic Chatterbox voice on big moments (default on)
     carddb_path: str | None = None
     window: int = 8
     poll_interval: float = 0.5
@@ -197,6 +200,10 @@ def _sanitize(kwargs: dict) -> dict:
                 clean[key] = _coerce_str(value)
             elif key == "tts_chains":
                 clean[key] = dict(value) if isinstance(value, dict) else None
+            elif key == "tts_engines":
+                clean[key] = dict(value) if isinstance(value, dict) else None
+            elif key == "tts_routing":
+                clean[key] = dict(value) if isinstance(value, dict) else None
             elif key == "story_thresholds":
                 clean[key] = dict(value) if isinstance(value, dict) else None
             elif key == "broadcast_mode":
@@ -229,7 +236,8 @@ def _sanitize(kwargs: dict) -> dict:
             elif key == "commentary_focus":
                 v = str(value).strip().lower()
                 clean[key] = v if v in COMMENTARY_FOCUSES else "balanced"
-            elif key in ("stream_enabled", "history_enabled", "auto_recap", "spectator", "coaching"):
+            elif key in ("stream_enabled", "history_enabled", "auto_recap", "spectator", "coaching",
+                         "hype_voice"):
                 clean[key] = bool(value)
             elif key == "stream_delay_s":
                 clean[key] = max(0.0, min(float(value), 900.0))

@@ -161,6 +161,12 @@ class BroadcastWindow(QWidget):
                                      'using only what you can see.')
         self.coaching_box.clicked.connect(self.pick_coaching)
         form.addRow('Coaching', self.coaching_box)
+        self.hype_box = QCheckBox('Extra energy on big moments')
+        self.hype_box.setToolTip('Game and match endings get a second, more excitable synthesis '
+                                 'engine (Chatterbox). Falls back to the normal voice if it is '
+                                 'not installed. Applies after a restart.')
+        self.hype_box.clicked.connect(self.pick_hype)
+        form.addRow('Hype calls', self.hype_box)
         self.voice_boxes = {}
         for key, label in (('pbp_voice', 'Play-by-play'), ('analyst_voice', 'Color analyst')):
             box = QComboBox()
@@ -220,6 +226,9 @@ class BroadcastWindow(QWidget):
         self.coaching_box.setEnabled(ai_booth)
         if not ai_booth:
             self.coaching_box.setToolTip('Coaching needs the AI booth (Settings > Commentary > Writer).')
+        cfg = getattr(self.app, 'config', None)
+        self.hype_box.setChecked(bool(getattr(cfg, 'hype_voice', True)))
+        self.hype_box.setEnabled(hasattr(self.app, 'apply_setting'))
         for key, box in self.voice_boxes.items():
             index = box.findData(booth.get(key) or '')
             if index >= 0:
@@ -271,6 +280,18 @@ class BroadcastWindow(QWidget):
         self._sync_booth()
         text = ('Coaching on: the booth may suggest plays, using only what you can see.' if on
                 else 'Coaching off: the booth describes the game without suggestions.')
+        self.voice_note.setText(text + ('' if saved else _NOT_SAVED))
+
+    def pick_hype(self, on):
+        try:
+            saved = self.app.apply_setting('hype_voice', bool(on))['saved']
+        except Exception:
+            self._sync_booth()
+            self.voice_note.setText('Could not change the hype voice.')
+            return
+        self._sync_booth()
+        text = ('Hype calls on: big moments get the extra-energy voice after a restart.' if on
+                else 'Hype calls off: one voice throughout, after a restart.')
         self.voice_note.setText(text + ('' if saved else _NOT_SAVED))
 
     def pick_speed(self, speed):

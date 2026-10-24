@@ -64,6 +64,7 @@ from .speech import (
     SpeechPump,
     SpeechQueue,
     build_speaker_chain,
+    launch_chains,
 )
 from .state_builder import GameStateBuilder, DualStateBuilder, with_knowledge
 from .sources import SourceTag, TaggedMessage
@@ -251,8 +252,11 @@ class ArenaOnAirApp:
             if self.dry_run:
                 speaker = PrintingSpeaker()
             else:
-                chains_cfg = ({"chains": self.config.tts_chains}
-                              if self.config.tts_chains else None)
+                chains_cfg = {
+                    "chains": launch_chains(self.config),
+                    "engines": self.config.tts_engines,
+                    "routing": self.config.tts_routing,
+                }
                 speaker = build_speaker_chain(
                     platform=self.config.tts_platform,
                     config=chains_cfg,
@@ -364,14 +368,41 @@ class ArenaOnAirApp:
             name = self.booth.get("analyst_name" if utt.role == "color_analyst" else "pbp_name")
             self.overlay.caption(utt.role, name, utt.text)
 
-    def _game_saved(self, match, game) -> None:
+    def _game_saved(self, match, game, lines=None) -> None:
         if not getattr(self.config, "auto_recap", True):
             return
         from .recap import write_recap
-        result = write_recap(match, config_mod.data_dir(self.config) / "recaps", booth=self.booth)
+        result = write_recap(match, config_mod.data_dir(self.config) / "recaps", booth=self.booth,
+                             script=lines)
         self.last_recap = result["markdown"]
         self._last_recap_lines = result["lines"]
         logger.info("Recap written: %s", result["markdown"])
+
+    def _llm_recap_lines(self, match, budget: float | None = None):
+        """Model-written recap within ``budget`` seconds, or None for the script.
+
+        Runs off-thread with a hard join so the watcher thread that detects the
+        completed match is never blocked on a full LLM timeout: if the model
+        misses the window (or rejects), the deterministic recap speaks.
+        """
+        if self.llm is None or not self.config.llm_base_url:
+            return None
+        from .recap import llm_script
+        client = self.llm.client
+        box: dict = {}
+
+        def run():
+            try:
+                box["lines"] = llm_script(match, client, style=self.booth.get("style"))
+            except Exception as exc:
+                logger.info("LLM recap rejected (%s); using the scripted recap", exc)
+
+        worker = threading.Thread(target=run, daemon=True, name="recap-llm")
+        worker.start()
+        if budget is None:
+            budget = min(self.config.llm_timeout * 2 + 1.0, 10.0)
+        worker.join(max(0.0, budget))
+        return box.get("lines")
 
     def _speak_completed_match(self, match_id):
         if (not self.config.auto_recap or getattr(self, '_trial_priming', False)
@@ -384,7 +415,9 @@ class ArenaOnAirApp:
         if match.get('match_id') != match_id or not games or not self._between_games():
             return
         # Build from every recorded game, not merely the last play or dialogue.
-        self._game_saved(match, games[-1])
+        # A connected model gets first crack at the script; the deterministic
+        # recap covers offline setups and any rejection.
+        self._game_saved(match, games[-1], lines=self._llm_recap_lines(match))
         if self.speak_last_recap():
             self._auto_recapped_match = match_id
             logger.info('Speaking automatic whole-match recap (%d games)', len(games))

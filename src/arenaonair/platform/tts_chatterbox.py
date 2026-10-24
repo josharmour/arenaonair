@@ -58,8 +58,10 @@ class ChatterboxEngine(KokoroEngine):
     ) -> None:
         # KokoroEngine.__init__ only sets plain attributes + locks; it never
         # imports kokoro. voice doubles as the default reference audio.
-        super().__init__(voice=voice or "", speed=1.0, device=device,
-                         player_bin=player_bin)
+        # device=None means AUTO here: pass "auto" through (the parent would
+        # otherwise coerce None to "cpu" before _get_model ever sees it).
+        super().__init__(voice=voice or "", speed=1.0,
+                         device=device or "auto", player_bin=player_bin)
         self.exaggeration = float(exaggeration)
         self.cfg_weight = float(cfg_weight)
         self.temperature = float(temperature)
@@ -76,7 +78,12 @@ class ChatterboxEngine(KokoroEngine):
     # -- model -------------------------------------------------------------
 
     def _get_model(self):
-        """Lazy ChatterboxTTS load; device auto-selects CUDA when present."""
+        """Lazy ChatterboxTTS load; device auto-selects CUDA when present.
+
+        A CUDA load that OOMs (GPU shared with the LLM server, for example)
+        falls back to CPU once and remembers it — a shared GPU must never
+        take the booth down.
+        """
         with self._pipeline_lock:
             if self._pipeline is None:
                 import torch
@@ -84,9 +91,25 @@ class ChatterboxEngine(KokoroEngine):
 
                 device = self.device
                 if device in (None, "", "auto"):
-                    device = "cuda" if torch.cuda.is_available() else "cpu"
+                    if torch.cuda.is_available():
+                        device = "cuda"
+                    elif getattr(torch.backends, "mps", None) is not None \
+                            and torch.backends.mps.is_available():
+                        device = "mps"  # Apple Silicon
+                    else:
+                        device = "cpu"
                 logger.info("loading chatterbox model on %s", device)
-                self._pipeline = ChatterboxTTS.from_pretrained(device=device)
+                try:
+                    self._pipeline = ChatterboxTTS.from_pretrained(device=device)
+                except torch.OutOfMemoryError:
+                    if not device.startswith("cuda"):
+                        raise
+                    logger.warning(
+                        "chatterbox: CUDA OOM loading model (%s busy?); "
+                        "falling back to CPU", device)
+                    device = "cpu"
+                    self._pipeline = ChatterboxTTS.from_pretrained(device=device)
+                self.device = device
             return self._pipeline
 
     def _resolve_reference(self, voice: str | None) -> str | None:
@@ -123,7 +146,9 @@ class ChatterboxEngine(KokoroEngine):
             temperature=self.temperature,
         )
         sr = int(getattr(model, "sr", 24000))
-        pcm = np.asarray(wav.squeeze().cpu().numpy(), dtype=np.float32)
+        if hasattr(wav, "detach"):  # torch.Tensor
+            wav = wav.detach().cpu().numpy()
+        pcm = np.asarray(wav, dtype=np.float32).reshape(-1)
         if pcm.size == 0:
             raise RuntimeError("chatterbox produced no audio")
         if self._is_cancelled(generation):

@@ -464,10 +464,12 @@ class TestPreemption:
 
 class TestChainDispatch:
     def test_linux_chain_selects_espeakng_when_kokoro_absent(self, monkeypatch):
-        # This box: no kokoro package, no piper binary -> espeak-ng wins.
+        # This box: no kokoro package, no piper binary, no chatterbox -> espeak-ng wins.
         import arenaonair.platform.tts as ttsmod
+        from arenaonair.platform.tts_chatterbox import ChatterboxEngine
 
         monkeypatch.setattr(ttsmod.KokoroEngine, "available", lambda self: False)
+        monkeypatch.setattr(ChatterboxEngine, "available", lambda self: False)
 
         import arenaonair.platform.tts_linux as lin
         monkeypatch.setattr(lin.PiperEngine, "available", lambda self: False)
@@ -499,8 +501,10 @@ class TestChainDispatch:
     def test_all_engines_unavailable_raises(self, monkeypatch):
         import arenaonair.platform.tts as ttsmod
         import arenaonair.platform.tts_linux as lin
+        from arenaonair.platform.tts_chatterbox import ChatterboxEngine
 
         monkeypatch.setattr(ttsmod.KokoroEngine, "available", lambda self: False)
+        monkeypatch.setattr(ChatterboxEngine, "available", lambda self: False)
         monkeypatch.setattr(lin.PiperEngine, "available", lambda self: False)
         monkeypatch.setattr(lin.EspeakNgEngine, "available", lambda self: False)
         with pytest.raises(RuntimeError, match="no available TTS engine"):
@@ -520,9 +524,10 @@ class TestChainDispatch:
     def test_default_chains_shape(self):
         from arenaonair.speech import DEFAULT_CHAINS
 
-        assert DEFAULT_CHAINS["windows"] == ("kokoro", "sapi")
-        assert DEFAULT_CHAINS["darwin"] == ("kokoro", "say")
-        assert DEFAULT_CHAINS["linux"] == ("kokoro", "piper", "espeakng")
+        assert DEFAULT_CHAINS["windows"] == ("kokoro", "chatterbox", "sapi")
+        assert DEFAULT_CHAINS["darwin"] == ("kokoro", "chatterbox", "say")
+        assert DEFAULT_CHAINS["linux"] == ("kokoro", "chatterbox", "piper",
+                                           "espeakng")
 
 
 # ---------------------------------------------------------------------------

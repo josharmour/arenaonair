@@ -59,13 +59,45 @@ DEFAULT_CHAINS: dict[str, tuple[str, ...]] = {
 # --------------------------------------------------------------------------
 
 #: Utterances at/above this salience route to the hype engine first.
-HYPE_MIN_SALIENCE = SALIENCE_HIGH
+#: MUST_SPEAK by default: CPU-speed synthesis (~0.35x realtime) is fine for
+#: game/match boundaries but would lag mid-play calls by many seconds.
+HYPE_MIN_SALIENCE = SALIENCE_MUST_SPEAK
 
 #: Excitement levels (Utterance.excitement) that route to the hype engine.
-HYPE_EXCITEMENT = frozenset({"tense", "electric"})
+#: Empty by default — opt in via [tts_routing] excitement once synthesis runs
+#: fast enough for mid-play lines.
+HYPE_EXCITEMENT: frozenset = frozenset()
 
 #: Event kinds ALWAYS routed to the hype engine regardless of salience.
 HYPE_KINDS = frozenset({"game_end", "match_end"})
+
+#: The hype engine's registry name (the one launch_chains() gates on).
+HYPE_ENGINE = "chatterbox"
+
+
+def launch_chains(config) -> dict[str, tuple[str, ...]]:
+    """Effective per-platform engine chains for THIS launch.
+
+    The ``hype_voice`` toggle gates whether Chatterbox joins the chain at all:
+    off (default) strips it everywhere — including from user-set
+    ``[tts_chains]`` overrides, so the toggle always wins; on leaves the
+    chain untouched and the availability probe skips it if the package is
+    missing. Routing stays configured either way; with no hype engine in the
+    chain it is a noop.
+    """
+    include_hype = bool(getattr(config, "hype_voice", False))
+
+    def strip(names) -> tuple[str, ...]:
+        names = tuple(names)
+        if include_hype:
+            return names
+        return tuple(n for n in names if n != HYPE_ENGINE)
+
+    chains_cfg = getattr(config, "tts_chains", None)
+    if chains_cfg:
+        return {plat: strip(names) for plat, names in chains_cfg.items()}
+    plat = getattr(config, "tts_platform", None) or detect_platform()
+    return {plat: strip(DEFAULT_CHAINS[plat])}
 
 
 # --------------------------------------------------------------------------

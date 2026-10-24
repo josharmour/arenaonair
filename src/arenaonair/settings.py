@@ -45,6 +45,10 @@ SETTINGS: tuple[Setting, ...] = (
             help="The AI booth may suggest plays for you, using only what you can see."),
     Setting("speech_speed", "Booth", "Speed", "float", section="broadcast", toml_key="speed",
             bounds=(0.5, 2.0, 0.1), help="How fast the casters talk. 1.0 is the voice's natural pace."),
+    Setting("hype_voice", "Booth", "Energetic hype voice", "bool", section="broadcast", restart=True,
+            help="Big moments (game and match endings, electric swings) get a second, more excitable "
+                 "synthesis engine (Chatterbox). Falls back silently to the normal voice if it isn't "
+                 "installed."),
     # -- commentary -----------------------------------------------------------
     Setting("narration_mode", "Commentary", "Writer", "choice",
             choices=(("auto", "Generative booth (connection required)"), ("llm", "AI booth"),

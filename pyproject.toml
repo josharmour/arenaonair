@@ -17,6 +17,9 @@ ui = ["PySide6>=6.6"]
 # Kokoro's English phonemizer downloads a spaCy model on first use. Including
 # pip makes that download target this interpreter, even in an unactivated uv venv.
 tts = ["kokoro>=0.9", "numpy>=1.24", "sounddevice>=0.4", "pip>=24"]
+# Hype engine (Chatterbox): high-energy synthesis for high-salience moments.
+# Pulls in torch; first run downloads the checkpoint from HF.
+tts-chatterbox = ["chatterbox-tts>=0.1", "torch>=2.2"]
 dev = ["pytest>=8", "pytest-timeout>=2", "numpy>=1.24"]
 
 [project.scripts]
