@@ -271,3 +271,67 @@ def test_rules_cache_build_from_local_bulk_preserves_order_and_unknown_rules(tmp
         assert db.lookup(2).oracle_text == ''
     finally:
         db.close()
+
+
+@pytest.fixture()
+def arena_rules_db(arena_db):
+    conn = sqlite3.connect(arena_db)
+    conn.executescript('''
+        ALTER TABLE Cards ADD COLUMN AbilityIds TEXT DEFAULT '';
+        ALTER TABLE Cards ADD COLUMN TextChangeData TEXT DEFAULT '';
+        UPDATE Cards SET AbilityIds='7:43,1027:605,90:901,91:902';
+        INSERT INTO Localizations_enUS VALUES (43, 1, 'Flash');
+        INSERT INTO Localizations_enUS VALUES (605, 1, 'Enchant creature');
+        INSERT INTO Localizations_enUS VALUES (901, 1, 'Enchanted creature gets <nobr>+1/+0</nobr> and has deathtouch.');
+        INSERT INTO Localizations_enUS VALUES (902, 1, 'When enchanted creature dies, return that card to the battlefield tapped under its owner''s control.');
+        CREATE TABLE Abilities (Id INT, TextId INT);
+        INSERT INTO Abilities VALUES (90, 999);
+        INSERT INTO Localizations_enUS VALUES (999, 1, 'WRONG generic ability text');
+    ''')
+    conn.commit()
+    conn.close()
+    return arena_db
+
+
+def test_installed_card_specific_rules_preserve_all_clauses(tmp_path, arena_rules_db):
+    db = CardDb(tmp_path / 'absent', arena_db_path=arena_rules_db)
+    try:
+        text = db.lookup(93987).oracle_text
+        assert text == "Flash\nEnchant creature\nEnchanted creature gets +1/+0 and has deathtouch.\nWhen enchanted creature dies, return that card to the battlefield tapped under its owner's control."
+        assert 'WRONG' not in text
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize('mutation', [
+    "DELETE FROM Localizations_enUS WHERE LocId=902",
+    "UPDATE Localizations_enUS SET Loc='<nobr></nobr>' WHERE LocId=902",
+    "UPDATE Cards SET AbilityIds='7:43,bad'",
+    "UPDATE Cards SET TextChangeData='unhandled substitution'",
+    "UPDATE Localizations_enUS SET Loc='Draw {unknown} cards.' WHERE LocId=902",
+    "UPDATE Localizations_enUS SET Loc='<unknown>text</unknown>' WHERE LocId=902",
+])
+def test_incomplete_native_rules_stay_wholly_unknown(tmp_path, arena_rules_db, mutation):
+    conn = sqlite3.connect(arena_rules_db)
+    conn.execute(mutation)
+    conn.commit()
+    conn.close()
+    db = CardDb(tmp_path / 'absent', arena_db_path=arena_rules_db)
+    try:
+        assert db.lookup(93987).name == 'Grim Tutor'
+        assert db.lookup(93987).oracle_text == ''
+    finally:
+        db.close()
+
+
+def test_native_mana_and_hybrid_symbols_preserve_costs(tmp_path, arena_rules_db):
+    conn = sqlite3.connect(arena_rules_db)
+    conn.execute("UPDATE Cards SET AbilityIds='90:901'")
+    conn.execute("UPDATE Localizations_enUS SET Loc=? WHERE LocId=901", ('Flashback—{o1o(U/R)o(U/R)}, Discard a card. {oT}: Add {oG}.',))
+    conn.commit()
+    conn.close()
+    db = CardDb(tmp_path / 'absent', arena_db_path=arena_rules_db)
+    try:
+        assert db.lookup(93987).oracle_text == 'Flashback—{1}{U/R}{U/R}, Discard a card. {T}: Add {G}.'
+    finally:
+        db.close()

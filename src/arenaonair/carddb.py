@@ -14,6 +14,7 @@ per missing id.
 
 from __future__ import annotations
 
+import html
 import logging
 import os
 import re
@@ -273,6 +274,7 @@ class CardDb:
         self._missing_warned_no_db = False
         self._open()
         self._arena_conn = None
+        self._arena_rules_columns = set()
         candidates = [Path(arena_db_path)] if arena_db_path is not None else (
             installed_arena_databases() if self._path == DEFAULT_DB_PATH else [])
         for candidate in candidates:
@@ -282,6 +284,7 @@ class CardDb:
                 conn.execute("SELECT GrpId, TitleId, TypeTextId, SubtypeTextId, OldSchoolManaText FROM Cards LIMIT 0")
                 conn.execute("SELECT LocId, Loc, Formatted FROM Localizations_enUS LIMIT 0")
                 self._arena_conn = conn
+                self._arena_rules_columns = {r[1] for r in conn.execute('PRAGMA table_info(Cards)')}
                 logger.info("CardDb: installed Arena database enabled for cache misses")
                 break
             except (sqlite3.Error, OSError):
@@ -341,9 +344,57 @@ class CardDb:
             symbols = re.findall(r"o([0-9]+|[WUBRGCXYZS])", raw_cost)
             cost = "".join("{" + symbol + "}" for symbol in symbols) if "".join("o" + symbol for symbol in symbols) == raw_cost else ""
             types = tuple(t for t in head.split() if t.lower() in {"artifact", "battle", "creature", "enchantment", "instant", "land", "planeswalker", "sorcery", "kindred", "tribal"})
-            return CardInfo(name, head + (" — " + subtypes if subtypes else ""), cost, types)
+            return CardInfo(name, head + (" — " + subtypes if subtypes else ""), cost, types,
+                            self._arena_rules(grp_id))
         except sqlite3.Error:
             return None
+
+    def _arena_rules(self, grp_id):
+        """Exact card-specific localized ability text, or wholly unknown rules.
+
+        The TextId in Cards.AbilityIds can override Abilities.TextId. Using the
+        generic ability's text loses card-specific wording. Hidden abilities,
+        reminder/flavor text and unsupported substitutions are never guessed.
+        """
+        if not {'AbilityIds', 'TextChangeData'} <= self._arena_rules_columns:
+            return ''
+        try:
+            row = self._arena_conn.execute(
+                'SELECT AbilityIds, TextChangeData FROM Cards WHERE GrpId=?', (grp_id,)).fetchone()
+            if not row or not row[0] or row[1]:
+                return ''
+            rules = []
+            for pair in row[0].split(','):
+                if not re.fullmatch(r'\d+:\d+', pair):
+                    return ''
+                text_id = int(pair.split(':')[1])
+                localized = self._arena_conn.execute(
+                    'SELECT Loc FROM Localizations_enUS WHERE LocId=? ORDER BY Formatted LIMIT 1',
+                    (text_id,)).fetchone()
+                if not localized or not localized[0]:
+                    return ''
+                text = html.unescape(localized[0])
+                # Strip only recognized presentation tags, preserving all prose.
+                text = re.sub(r'</?(?:nobr|b|i)>', '', text)
+                def mana(match):
+                    raw = match[1]
+                    symbols = re.findall(r'o(\d+|[WUBRGCXYZSTQEP]|\([WUBRGC2]/[WUBRGCP]\))', raw)
+                    if ''.join('o' + s for s in symbols) != raw:
+                        return match[0]  # unresolved: reject below
+                    return ''.join('{' + s.strip('()') + '}' for s in symbols)
+                text = re.sub(r'\{(o[^{}]+)\}', mana, text)
+                # Unknown markup or formatting variables make the whole card
+                # incomplete. Never pass a plausible but partial rules subset.
+                plain = re.sub(r'\{(?:\d+|[WUBRGCXYZSTQEP]|[WUBRGC2]/[WUBRGCP])\}', '', text)
+                if re.search(r'[<>{}]|\[|\]|~', plain):
+                    return ''
+                if not text.strip():
+                    return ''
+                rules.append(text.strip())
+            result = '\n'.join(rules)
+            return result if len(result) <= 4000 else ''
+        except (sqlite3.Error, TypeError, ValueError):
+            return ''
 
     # -- queries -----------------------------------------------------------
 
@@ -364,7 +415,7 @@ class CardDb:
             if row is None:
                 native = self._arena_lookup(grp_id)
                 if native is not None:
-                    if self._conn is not None and self._has_oracle:
+                    if not native.oracle_text and self._conn is not None and self._has_oracle:
                         # Exact card name only: never infer rules from a similar
                         # printing name or an adjacent Arena ID.
                         rules = self._conn.execute("SELECT oracle_text FROM cards WHERE name=? AND oracle_text != '' LIMIT 1", (native.name,)).fetchone()
