@@ -212,7 +212,12 @@ draw step", "beyond the first", "only creatures") must appear in its cited rules
 element must still be supported: who, which card, numbers, counts and ordinals
 ("first", "third", "again", "another"), timing and phases, zones, causes, targets,
 results, hidden cards, and claims about the whole board ("only", "empty", "first
-body back"). If unsure whether a FACT is supported, mark false; do not excuse a
+body back"). Strategy facts (tempo counts, resource streaks, arcs, topdeck mode)
+are the booth's own detector classifications of the recorded game: citing one
+supports stating that classification and its plain narrative consequence ("the
+flood starved the comeback"), but not new game events, card identities, or
+numbers beyond it. A pronoun or descriptor may refer to a player named earlier
+in the same recap. If unsure whether a FACT is supported, mark false; do not excuse a
 factual error as broadcast shorthand."""
 
 

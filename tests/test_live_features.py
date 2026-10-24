@@ -4,6 +4,7 @@ import json
 import os
 import stat
 import sys
+import time
 import urllib.request
 
 import pytest
@@ -16,7 +17,7 @@ from arenaonair.matchlog import MatchRecorder, latest_match_file
 from arenaonair.models import (CardRef, DeliveryResult, Event, GameState, MatchMeta, PlayerView,
                                SeatKnowledge, TurnInfo, ZoneView)
 from arenaonair.personas import PERSONAS, cap_excitement
-from arenaonair.recap import build_script, highlights, llm_script, write_recap
+from arenaonair.recap import _recap_facts, build_script, highlights, llm_script, write_recap
 from arenaonair.speech import SpeechQueue
 
 
@@ -147,7 +148,7 @@ def test_automatic_recap_covers_match_once_and_survives_end_updates(tmp_path, mo
         app._speak_completed_match('m')
         lines = list(app.queue.pending())
         text = ' '.join(u.text for u in lines)
-        assert 'Game 1' in text and 'Game 2' in text and 'Match score' in text
+        assert 'Game 1' in text and 'Game 2' in text and 'Final score' in text
         app._speak_completed_match('m')
         assert list(app.queue.pending()) == lines
         app._consume_snapshot(current, current, [])
@@ -169,6 +170,160 @@ def test_deterministic_recap_uses_only_recorded_facts():
     for fact in ('Alice in 7 turns', 'turn 6', '18 down to 9', 'Negate', 'Lightning Bolt', 'Bob on 0'):
         assert fact in text
     assert {l['role'] for l in build_script(MATCH, dual=False)} == {'play_by_play'}
+
+
+def test_deterministic_recap_opens_cold_without_studio_greeting():
+    from copy import deepcopy
+    text = ' '.join(l['text'] for l in build_script(MATCH)).lower()
+    assert 'welcome back' not in text
+    # A decided match leads with the result, not an intro.
+    assert build_script(MATCH)[0]['text'] == 'Alice closes it out.'
+    lost = deepcopy(MATCH)
+    lost['games'][0].update(result='loss', winner_seat=2)
+    assert build_script(lost)[0]['text'] == 'Bob closes it out.'
+
+
+def test_deterministic_recap_series_opener_states_the_score():
+    from copy import deepcopy
+    multi = deepcopy(MATCH)
+    multi['games'] = [deepcopy(multi['games'][0]) for _ in range(3)]
+    for i, result in enumerate(('win', 'loss', 'win'), 1):
+        multi['games'][i - 1].update(game_id=str(i), result=result, closed=True)
+    lines = build_script(multi)
+    assert lines[0]['text'] == 'Alice takes the match, 2 games to 1.'
+    assert any('Final score: Alice 2, Bob 1' in l['text'] for l in lines)
+    assert 'welcome back' not in ' '.join(l['text'] for l in lines).lower()
+
+
+STRATEGY_MATCH = {'match_id': 'm2', 'local_seat': 1, 'names': {'1': 'Alice', '2': 'Bob'}, 'games': [{
+    'game_id': '1', 'winner_seat': 1, 'result': 'win', 'turns': 9, 'final_life': {'1': 12, '2': 0},
+    'events': [
+        {'kind': 'land_drop', 'seat': 1, 'turn': 2, 'data': {}},
+        {'kind': 'attack_declared', 'seat': 1, 'turn': 3, 'data': {'attackers': [{'instance_id': 5}]}},
+        {'kind': 'attack_declared', 'seat': 1, 'turn': 4, 'data': {'attackers': [{'instance_id': 5}]}},
+        {'kind': 'attack_declared', 'seat': 1, 'turn': 5, 'data': {'attackers': [{'instance_id': 5}]}},
+        {'kind': 'attack_declared', 'seat': 2, 'turn': 6, 'data': {'attackers': [{'instance_id': 9}]}},
+        {'kind': 'narrative_resource', 'seat': 2, 'turn': 7, 'data': {'streak_kind': 'flood', 'length': 4}},
+        {'kind': 'narrative_arc', 'seat': 1, 'turn': 8,
+         'data': {'from_arc': 'standoff', 'to_arc': 'pulling_away', 'leader_seat': 1}},
+        {'kind': 'topdeck_mode', 'seat': 2, 'turn': 8, 'data': {}},
+        {'kind': 'board_shift', 'seat': 1, 'turn': 8,
+         'data': {'creatures_before': 1, 'creatures_after': 5, 'power_before': 2, 'power_after': 15}},
+        {'kind': 'graveyard_recursion', 'seat': 2, 'turn': 6, 'data': {'name': 'Voja'}},
+        {'kind': 'graveyard_recursion', 'seat': 2, 'turn': 8, 'data': {'name': 'Voja'}},
+        {'kind': 'hand_sculpting', 'seat': 1, 'turn': 5, 'data': {'count': 2}},
+        {'kind': 'life_change', 'seat': 2, 'turn': 9, 'data': {'from': 10, 'to': 0, 'delta': -10}},
+        {'kind': 'game_end', 'seat': None, 'turn': 9, 'data': {'winning_team_id': 1}}]}]}
+
+
+def test_strategy_facts_mined_from_recorded_events():
+    strat = highlights(STRATEGY_MATCH)[0]['strategy']
+    assert strat['attacks'] == {'Alice': 3, 'Bob': 1}
+    assert strat['resources'] == [{'player': 'Bob', 'kind': 'flood', 'length': 4,
+                                   'what': 'extra lands 4 turns running'}]
+    assert strat['arcs'] == [{'from': 'a standoff', 'to': 'one side pulling away',
+                              'leader': 'Alice', 'turn': 8}]
+    assert strat['topdecks'] == [{'player': 'Bob', 'turn': 8}]
+    assert strat['board_shifts'] == [{'player': 'Alice', 'turn': 8, 'creatures_before': 1,
+                                      'creatures_after': 5, 'power_before': 2, 'power_after': 15}]
+    assert strat['recursions'] == [{'player': 'Bob', 'card': 'Voja', 'turn': 6},
+                                   {'player': 'Bob', 'card': 'Voja', 'turn': 8}]
+    assert strat['sculptors'] == [{'player': 'Alice', 'count': 2, 'turn': 5}]
+    facts = _recap_facts(STRATEGY_MATCH)
+    assert facts['game:1:tempo']['attacks'] == {'Alice': 3, 'Bob': 1}
+    assert facts['game:1:resource:0']['kind'] == 'flood'
+    assert facts['game:1:arc:0']['to'] == 'one side pulling away'
+    assert facts['game:1:topdeck'] == [{'player': 'Bob', 'turn': 8}]
+    assert facts['game:1:board']['creatures_after'] == 5
+    assert facts['game:1:recursion'][0]['card'] == 'Voja'
+    assert facts['game:1:sculpting'][0]['count'] == 2
+
+
+def test_recap_tells_the_story_not_notes():
+    text = ' '.join(l['text'] for l in build_script(STRATEGY_MATCH))
+    # Strategy narrative, not a stat readout.
+    assert 'Alice set the pace, attacking 3 times to Bob\'s 1.' in text
+    assert 'The lands kept coming for Bob — extra lands 4 turns running.' in text
+    assert 'Momentum shifted around turn 8: one side pulling away, Alice out front.' in text
+    assert 'living off the top of the deck' in text
+    assert "Alice's board took over around turn 8: 1 creature became 5." in text
+    assert 'Bob kept bringing Voja back from the graveyard.' in text
+    assert 'churning through the deck with cheap draw spells' in text
+    # Same-subject lines continue without repeating the name.
+    assert 'another 10 life gone in one turn' in text
+    # Facts the older assertions rely on are untouched.
+
+
+def test_recap_cohesion_drops_repeated_subject_names():
+    lines = [l['text'] for l in build_script(MATCH)]
+    # First blood names Bob; the swing and the counter stay on Bob -> no name.
+    swing = next(l for l in lines if l.startswith('The big swing'))
+    assert swing == ('The big swing came on turn 6: another 9 life gone in one turn, '
+                     '18 down to 9.')
+    counter = next(l for l in lines if l.startswith('Turn 4'))
+    assert counter == 'Turn 4, the Voja was countered by Negate.'
+
+
+def test_app_llm_recap_used_when_connected_and_scripted_otherwise(tmp_path):
+    from types import SimpleNamespace
+    from arenaonair.app import ArenaOnAirApp
+    from arenaonair.config import Config
+    app = ArenaOnAirApp(Config(data_dir=str(tmp_path)), dry_run=True)
+    try:
+        # No booth connection: straight to the deterministic script.
+        assert app._llm_recap_lines(MATCH) is None
+        app.config.llm_base_url = 'http://example.test'
+        app.llm = FakeBooth(RecapClient(GOOD))
+        assert [l['text'] for l in app._llm_recap_lines(MATCH, budget=5)] == [t['text'] for t in GOOD]
+        # A rejecting model falls back (structure rejection here).
+        app.llm = FakeBooth(RecapClient([], accept=True))
+        assert app._llm_recap_lines(MATCH, budget=5) is None
+        # A slow model misses the bounded window instead of stalling the watcher.
+        class SlowClient:
+            def _request(self, system, context):
+                time.sleep(2)
+                return {'turns': GOOD}
+            def verify(self, context, turns):
+                return True
+        app.llm = FakeBooth(SlowClient())
+        started = time.monotonic()
+        assert app._llm_recap_lines(MATCH, budget=0.2) is None
+        assert time.monotonic() - started < 1.5
+    finally:
+        app.stop()
+
+
+def test_speak_completed_match_queues_llm_lines_and_writes_them(tmp_path):
+    from types import SimpleNamespace
+    from copy import deepcopy
+    from arenaonair.app import ArenaOnAirApp
+    from arenaonair.config import Config
+    app = ArenaOnAirApp(Config(data_dir=str(tmp_path)), dry_run=True)
+    try:
+        match = deepcopy(MATCH)
+        match['match_id'] = 'm'
+        match['games'][0].update(closed=True)
+        app.recorder.match = match
+        app.recorder._game = match['games'][0]
+        app._match_id = 'm'
+        app.config.llm_base_url = 'http://example.test'
+        app.llm = FakeBooth(RecapClient(GOOD))
+        app._speak_completed_match('m')
+        queued = [u.text for u in app.queue.pending()]
+        assert queued == [t['text'] for t in GOOD]
+        md = open(app.last_recap, encoding='utf-8').read()
+        assert all(t['text'] in md for t in GOOD)
+        assert 'See you next time' not in md  # not the deterministic closer
+    finally:
+        app.stop()
+
+
+class FakeBooth:
+    """Stand-in for GenerativeBooth carrying just a recap client."""
+    def __init__(self, client):
+        self.client = client
+    def stop(self):
+        pass
 
 
 class RecapClient:

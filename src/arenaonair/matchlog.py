@@ -30,7 +30,9 @@ PRIVATE_KINDS = frozenset({
 })
 _KEEP_FIELDS = ("name", "grp_id", "instance_id", "from", "to", "delta", "amount", "count",
                 "target_seat", "countered_by_name", "countered_by_seat", "winning_team_id",
-                "reason", "arc", "from_arc", "to_arc", "streak_kind", "length", "attackers")
+                "reason", "arc", "from_arc", "to_arc", "streak_kind", "length", "attackers",
+                "creatures_before", "creatures_after", "power_before", "power_after",
+                "card_name", "first_card", "second_card")
 MAX_EVENTS_PER_GAME = 1500
 MAX_MATCH_FILES = 200
 
