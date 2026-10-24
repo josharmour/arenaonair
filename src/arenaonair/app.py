@@ -263,15 +263,24 @@ class ArenaOnAirApp:
                     voice=self.booth["pbp_voice"],
                 )
             self.speaker = speaker
-            # Pre-heat the hype engine off-thread: model load + one throwaway
-            # synthesis at startup, so the first game-end call costs only
-            # synthesis (~6s on MPS) instead of load+warmup (~20s+).
-            for engine in getattr(speaker, "engines",
-                                  [getattr(speaker, "engine", None)]):
-                if getattr(engine, "name", "") == "chatterbox":
-                    threading.Thread(target=engine.warmup,
-                                     name="arenaonair-chatterbox-warmup",
-                                     daemon=True).start()
+            # Warm engines off-thread SEQUENTIALLY in ONE worker: concurrent
+            # heavy imports (kokoro's and chatterbox's transformers) can race
+            # a partially-initialized module and die with ImportError.
+            def _warm_all():
+                engines = getattr(speaker, "engines",
+                                  [getattr(speaker, "engine", None)])
+                if self.booth_mode == "dual":
+                    for engine in engines:
+                        preload = getattr(engine, "preload_voices", None)
+                        if callable(preload):
+                            preload([v for v in (self.booth["pbp_voice"],
+                                                 self.booth["analyst_voice"]) if v])
+                for engine in engines:
+                    if getattr(engine, "name", "") == "chatterbox":
+                        engine.warmup()
+            threading.Thread(target=_warm_all,
+                             name="arenaonair-engine-warmup",
+                             daemon=True).start()
             if self.booth_mode == "dual":
                 for engine in getattr(speaker, "engines", [getattr(speaker, "engine", None)]):
                     preload = getattr(engine, "preload_voices", None)
