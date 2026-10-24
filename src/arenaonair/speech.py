@@ -46,10 +46,26 @@ PRESERVED_KINDS = frozenset({
 })
 
 DEFAULT_CHAINS: dict[str, tuple[str, ...]] = {
-    "windows": ("kokoro", "sapi"),
-    "darwin": ("kokoro", "say"),
-    "linux": ("kokoro", "piper", "espeakng"),
+    # chatterbox sits behind kokoro as the hype engine: routing (below) lifts
+    # it to the FRONT for high-salience utterances, and its absence (package
+    # not installed) is invisible to the chain probe.
+    "windows": ("kokoro", "chatterbox", "sapi"),
+    "darwin": ("kokoro", "chatterbox", "say"),
+    "linux": ("kokoro", "chatterbox", "piper", "espeakng"),
 }
+
+# --------------------------------------------------------------------------
+# Hype-engine routing (chatterbox)
+# --------------------------------------------------------------------------
+
+#: Utterances at/above this salience route to the hype engine first.
+HYPE_MIN_SALIENCE = SALIENCE_HIGH
+
+#: Excitement levels (Utterance.excitement) that route to the hype engine.
+HYPE_EXCITEMENT = frozenset({"tense", "electric"})
+
+#: Event kinds ALWAYS routed to the hype engine regardless of salience.
+HYPE_KINDS = frozenset({"game_end", "match_end"})
 
 
 # --------------------------------------------------------------------------
@@ -710,7 +726,7 @@ def build_speaker_chain(
     )
     if len(available_engines) == 1:
         return EngineSpeaker(available_engines[0])
-    return ChainedSpeaker(available_engines)
+    return ChainedSpeaker(available_engines, routing=cfg.get("routing"))
 
 
 class EngineSpeaker:
@@ -815,13 +831,49 @@ class ChainedSpeaker:
     #: rather than an engine fault (set by the engines themselves).
     CANCEL_MARKERS = ("cancelled", "canceled", "interrupted")
 
-    def __init__(self, engines: list) -> None:
+    def __init__(self, engines: list, routing: dict | None = None) -> None:
         from .platform.tts import TTSEngine
 
         if not engines or not all(isinstance(e, TTSEngine) for e in engines):
             raise TypeError("ChainedSpeaker expects non-empty TTSEngine list")
         self.engines = engines
         self._active = 0
+        # Hype-engine routing knobs (config["routing"] overrides): which
+        # utterances are lifted to the hype engine (chatterbox) ahead of the
+        # chain order. Missing/empty hype engine in the chain = routing noop.
+        cfg = routing or {}
+        self.hype_engine_name = str(cfg.get("hype_engine", "chatterbox"))
+        self.hype_min_salience = int(cfg.get("min_salience", HYPE_MIN_SALIENCE))
+        self.hype_excitement = frozenset(
+            cfg.get("excitement", HYPE_EXCITEMENT) or [])
+        self.hype_kinds = frozenset(cfg.get("kinds", HYPE_KINDS) or [])
+
+    def _hype_engine(self):
+        """The hype engine in this chain, or None when absent."""
+        for eng in self.engines:
+            if eng.name == self.hype_engine_name:
+                return eng
+        return None
+
+    def _prefers_hype(self, utterance: Utterance) -> bool:
+        """True iff this utterance should TRY the hype engine first."""
+        if int(getattr(utterance, "salience", 0) or 0) >= self.hype_min_salience:
+            return True
+        if str(getattr(utterance, "excitement", "") or "") in self.hype_excitement:
+            return True
+        return str(getattr(utterance, "kind", "") or "") in self.hype_kinds
+
+    def _ordered_engines(self, utterance: Utterance) -> list:
+        """Chain order for this utterance: hype engine first when preferred.
+
+        The hype engine keeps its fallback position for everything else, and
+        a hype failure still falls through to the rest of the chain — routing
+        changes WHO speaks first, never WHETHER the line gets spoken.
+        """
+        hype = self._hype_engine()
+        if hype is None or not self._prefers_hype(utterance):
+            return self.engines
+        return [hype] + [e for e in self.engines if e is not hype]
 
     @property
     def engine(self):
@@ -846,7 +898,7 @@ class ChainedSpeaker:
 
     def speak(self, utterance: Utterance) -> DeliveryResult:
         reasons: list[str] = []
-        for idx, eng in enumerate(self.engines):
+        for idx, eng in enumerate(self._ordered_engines(utterance)):
             routed = _utterance_for_engine(eng, utterance)
             override = routed.voice
             if override:
@@ -855,7 +907,7 @@ class ChainedSpeaker:
             else:
                 result = eng.speak(routed)
             if result.ok:
-                self._active = idx
+                self._active = self.engines.index(eng)
                 return result
             reasons.append(f"{eng.name}: {result.reason}")
             if self._is_cancellation(result.reason):

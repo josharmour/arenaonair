@@ -445,6 +445,7 @@ def load_engine_class(name: str) -> type[TTSEngine]:
 
 ENGINE_REGISTRY: dict[str, tuple[str, str]] = {
     "kokoro": ("arenaonair.platform.tts", "KokoroEngine"),
+    "chatterbox": ("arenaonair.platform.tts_chatterbox", "ChatterboxEngine"),
     "sapi": ("arenaonair.platform.tts_windows", "SapiEngine"),
     "say": ("arenaonair.platform.tts_macos", "SayEngine"),
     "piper": ("arenaonair.platform.tts_linux", "PiperEngine"),
