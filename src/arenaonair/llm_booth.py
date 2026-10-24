@@ -854,6 +854,14 @@ class GenerativeBooth:
                                          row.get('instance_id', row.get('blocker_instance_id')) in event.payload['confirmed_instance_ids'])]
                     if not payload[key]:
                         return
+                    payload['count'] = len(payload[key])
+                    for row in payload[key]:
+                        ref = snap.objects.get(row.get('instance_id', row.get('blocker_instance_id')))
+                        if ref is not None:
+                            if ref.name:
+                                row['name'] = ref.name
+                            if ref.type_line:
+                                row['type_line'] = ref.type_line
                     if key == 'attackers':
                         for row in payload[key]:
                             ref = snap.objects.get(row.get('instance_id'))
@@ -1209,27 +1217,55 @@ class GenerativeBooth:
         # changes on every draw and play: that voids only lines citing it or
         # naming a card that has since left it (otherwise the booth goes silent).
         self._refresh_private()
-        refs = {r for t in turns for r in t['refs']}
-        spoken = ' '.join(t['text'] for t in turns).lower()
         local = self.snap.local_seat if self.snap else None
-        strict = {}
-        for key, then in work.context['facts'].items():
-            if not key.startswith('private:'):
-                continue
-            own = then.get('seat') == local and local is not None
-            if not own:
-                strict[key] = then
-            now = self.facts.get(key)
-            if now == then:
-                continue
-            gone = ({c.get('name') for c in then.get('cards', [])} -
-                    {c.get('name') for c in (now or {}).get('cards', [])})
-            if not own or key in refs or any(name and name.lower() in spoken for name in gone):
-                raise ModelError('invalidated_private_facts')
-        deps = {r: work.context['facts'][r] for r in refs if r.startswith(('state:', 'private:'))}
-        deps.update(strict)
-        if any(self.facts.get(k) != v for k, v in deps.items()):
-            raise ModelError('invalidated_facts')
+        strict = {key: then for key, then in work.context['facts'].items()
+                  if key.startswith('private:') and not (local is not None and then.get('seat') == local)}
+        if any(self.facts.get(key) != then for key, then in strict.items()):
+            raise ModelError('invalidated_private_facts')
+        # A stale analyst tail must not erase a valid event-only opening call.
+        # Keep only a contiguous prefix, and never leave its handoff unanswered.
+        fresh, dependencies = [], []
+        reason = None
+        for turn in turns:
+            refs = set(turn['refs'])
+            spoken = turn['text'].lower()
+            deps = {r: work.context['facts'][r] for r in refs if r.startswith(('state:', 'private:'))}
+            deps.update(strict)
+            for key, then in work.context['facts'].items():
+                if not key.startswith('private:') or then.get('seat') != local:
+                    continue
+                # A card leaving the listener's hand during writing invalidates
+                # uncited mentions too. Unchanged own-hand facts do not become
+                # dependencies of an otherwise public, event-only call.
+                now = self.facts.get(key)
+                gone = ({c.get('name') for c in then.get('cards', [])} -
+                        {c.get('name') for c in (now or {}).get('cards', [])})
+                if any(name and name.lower() in spoken for name in gone):
+                    deps[key] = then
+            changed = [k for k, v in deps.items() if self.facts.get(k) != v]
+            if changed:
+                reason = 'invalidated_private_facts' if any(k.startswith('private:') for k in changed) else 'invalidated_facts'
+                break
+            fresh.append(turn)
+            dependencies.append(deps)
+        while fresh and '?' in fresh[-1]['text']:
+            fresh.pop()
+            dependencies.pop()
+        if reason:
+            if not fresh:
+                raise ModelError(reason)
+            # A prefix must independently satisfy the same exchange contract,
+            # including its new-event citation, not just per-line freshness.
+            validate_output({'turns': fresh}, work.context, work.context['allowed_roles'])
+            self.counts['salvaged_fresh_lines'] += len(fresh)
+            self.counts[reason] += len(turns) - len(fresh)
+            logger.warning('LLM booth retained %d fresh opening line(s); dropped stale tail (%s)', len(fresh), reason)
+        turns = fresh
+        # A queued question depends on its answer remaining deliverable too.
+        # Plain calls do not inherit unrelated analyst-state dependencies.
+        for i in range(len(turns) - 2, -1, -1):
+            if '?' in turns[i]['text']:
+                dependencies[i].update(dependencies[i + 1])
         if len(self.queue) + len(turns) > 6:
             raise ModelError('speech_backlog')
         # Queue strictly behind lines still waiting to be spoken.
@@ -1247,7 +1283,7 @@ class GenerativeBooth:
                 self.analyst_lines[self._turn_number()] += 1
             evidence = {r: work.context['facts'][r] for r in turn['refs'] if r in work.context['facts']}
             record = {'id': 'heard:' + uid, 'uid': uid, 'role': turn['role'], 'text': utt.text,
-                'refs': turn['refs'], 'facts': evidence, 'deps': deps, 'epoch': self.epoch,
+                'refs': turn['refs'], 'facts': evidence, 'deps': dependencies[i], 'epoch': self.epoch,
                 'play_ids': list({f['play_id'] for f in evidence.values() if f.get('play_id')}),
                 'salience': utt.salience, 'status': 'generated', 'created': work.started}
             self.records.append(record)

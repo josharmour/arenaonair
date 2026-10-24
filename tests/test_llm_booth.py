@@ -648,3 +648,80 @@ def test_the_model_sees_roles_instead_of_unsayable_names():
     assert context['facts']['state:player:2']['name'] == 'the opponent'
     assert context['facts']['state:player:1']['name'] == 'Alice'
     assert 'Heyster12806' not in json.dumps(context)
+
+
+def _freshness_exchange(context, question=False):
+    return {'turns': [
+        {'role': 'play_by_play', 'text': 'What happened?' if question else 'Opt goes onto the stack.', 'refs': context['new_events']},
+        {'role': 'color_analyst', 'text': 'Alice is at 20 life.', 'refs': ['state:player:1']}]}
+
+
+@pytest.mark.parametrize('during', ['generation', 'queue'])
+def test_stale_analyst_does_not_discard_fresh_opening(during):
+    b, q, _, w, pump = setup_booth()
+    w.output = _freshness_exchange
+    b.submit(cast(), snapshot())
+    work = b.take_work()
+    if during == 'generation':
+        b.observe(snapshot(players={1: PlayerView(1, 19), 2: PlayerView(2, 20)}))
+    b.process(work)
+    if during == 'queue':
+        b.observe(snapshot(players={1: PlayerView(1, 19), 2: PlayerView(2, 20)}))
+    assert [u.text for u in q.pending()] == ['Opt goes onto the stack.']
+    pump.run_once()
+    assert b.heard[-1]['text'] == 'Opt goes onto the stack.'
+
+
+@pytest.mark.parametrize('during', ['generation', 'queue'])
+def test_stale_answer_never_leaves_a_question_on_air(during):
+    b, q, _, w, _ = setup_booth()
+    w.output = lambda c: _freshness_exchange(c, question=True)
+    b.submit(cast(), snapshot())
+    work = b.take_work()
+    if during == 'generation':
+        b.observe(snapshot(players={1: PlayerView(1, 19), 2: PlayerView(2, 20)}))
+    b.process(work)
+    if during == 'queue':
+        b.observe(snapshot(players={1: PlayerView(1, 19), 2: PlayerView(2, 20)}))
+    assert not q.pending()
+
+
+def test_changed_private_opponent_hand_still_voids_whole_exchange():
+    b, q, clock, w, _ = setup_booth()
+    w.output = _freshness_exchange
+    b.submit(cast(), private_snapshot(clock))
+    work = b.take_work()
+    b.observe(private_snapshot(clock, False))
+    b.process(work)
+    assert not q.pending()
+    assert b.counts['invalidated_private_facts'] == 1
+
+
+def test_combat_event_carries_observed_names_types_and_count():
+    b, _, _, _, _ = setup_booth()
+    snap = snapshot(objects={
+        10: CardRef(10, 1, 'Opt', 'Creature — Bird', ('creature',)),
+        11: CardRef(11, 2, 'Bird Two', 'Creature — Bird', ('creature',))})
+    event = Event('block_declared', 1, {'blocks': [
+        {'blocker_instance_id': 10, 'attacker_instance_ids': [20]},
+        {'blocker_instance_id': 11, 'attacker_instance_ids': [21]}], 'confirmed_instance_ids': [10, 11]}, 0, 2)
+    b.submit(event, snap)
+    work = b.take_work()
+    fact = work.context['facts'][work.context['new_events'][0]]
+    assert fact['data']['count'] == 2
+    assert fact['data']['blocks'][0]['name'] == 'Opt'
+    assert fact['data']['blocks'][1]['type_line'] == 'Creature — Bird'
+    valid = {'turns': [{'role': 'play_by_play', 'text': 'Two blockers step in.', 'refs': work.context['new_events']}]}
+    assert validate_output(valid, work.context, ['play_by_play'])
+
+
+def test_fresh_prefix_still_requires_new_event_citation():
+    b, q, _, w, _ = setup_booth()
+    w.output = lambda c: {'turns': [
+        {'role': 'color_analyst', 'text': 'Bob is at 20 life.', 'refs': ['state:player:2']},
+        {'role': 'play_by_play', 'text': 'Alice is at 20 life.', 'refs': c['new_events'] + ['state:player:1']}]}
+    b.submit(cast(), snapshot())
+    work = b.take_work()
+    b.observe(snapshot(players={1: PlayerView(1, 19), 2: PlayerView(2, 20)}))
+    b.process(work)
+    assert not q.pending()
