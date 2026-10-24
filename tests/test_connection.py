@@ -170,3 +170,50 @@ def test_provider_keys_cannot_overwrite_another_endpoints_credential(tmp_path):
     connection.write_key(second, 'second-secret')
     assert first != second
     assert first.read_text().strip() == 'first-secret'
+
+
+@pytest.mark.parametrize('base', [connection.HOSTED_URL, connection.TRIAL_URL, 'http://localhost:1234/v1'])
+def test_all_providers_prime_midgame_without_speaking_or_recording(tmp_path, monkeypatch, base):
+    from arenaonair.app import ArenaOnAirApp
+    from arenaonair.watcher import LogWatcher
+    from types import SimpleNamespace
+    import json
+    def state(gid, full=False, life=20):
+        return json.dumps({'greToClientEvent': {'greToClientMessages': [
+            {'type': 'GREMessageType_GameStateMessage', 'gameStateMessage': {
+                'type': 'GameStateType_Full' if full else 'GameStateType_Diff',
+                'gameStateId': gid, 'prevGameStateId': gid-1,
+                'gameInfo': {'matchID': 'current', 'gameNumber': 2, 'stage': 'GameStage_Playing'},
+                'players': [{'systemSeatNumber': 1, 'lifeTotal': life}],
+                'turnInfo': {'turnNumber': gid, 'activePlayer': 1}}}]}})
+    path = tmp_path / 'Player.log'
+    path.write_text(state(10, True) + '\n' + state(11, life=17) + '\n')
+    app = ArenaOnAirApp(Config(llm_base_url=base, carddb_path=str(tmp_path / 'cards'),
+                              history_enabled=False, poll_interval=.005), dry_run=True)
+    app._state = 'watching'  # start() normally sets this before the watcher thread
+    app.watcher = watcher = LogWatcher(path, restore=True)
+    observed = []
+    app.recorder = SimpleNamespace(observe=lambda event, snap: observed.append(event.kind), finish_match=lambda: None)
+    original_poll = watcher.poll
+    calls = 0
+    def poll():
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            assert not app.llm.pending and not app.queue.pending() and not observed
+            assert app.builder._chain_valid and app._match_id == 'current'
+            with path.open('a') as f:
+                f.write(state(12, life=15) + '\n')
+        if calls == 3:
+            app._stop_event.set()
+            return []
+        return original_poll()
+    monkeypatch.setattr(watcher, 'poll', poll)
+    try:
+        app._watch_loop()  # no threads, no inference, no TTS
+        assert app.builder._gre_id == 12 and app.builder._chain_valid
+        assert 'life_change' in observed
+        assert app.llm.pending
+        assert app.status()['state'] == 'in_match'
+    finally:
+        app.stop()
