@@ -363,3 +363,52 @@ class TestLaunchChainsToggle:
         eng._get_model()
         assert calls == ["cuda", "cpu"]
         assert eng.device == "cpu"
+
+    def test_warmup_loads_and_generates_once(self):
+        eng = StubbedChatterbox()
+        assert eng.warmup() is True
+        assert len(eng.fake_model.calls) == 1
+        assert eng.fake_model.calls[0]["text"] == "Ready."
+        # Second warmup is idempotent-cheap: model already resident.
+        assert eng.warmup() is True
+        assert len(eng.fake_model.calls) == 2
+
+    def test_warmup_never_raises(self):
+        eng = StubbedChatterbox()
+
+        def boom(*a, **k):
+            raise RuntimeError("cold")
+
+        eng.fake_model.generate = boom
+        assert eng.warmup() is False
+
+    def test_dtype_casts_model_parts(self, monkeypatch):
+        import torch
+
+        class Part:
+            def __init__(self):
+                self.dtype = torch.float32
+
+            def to(self, dtype=None):
+                self.dtype = dtype
+
+        class PartsModel(FakeModel):
+            def __init__(self):
+                super().__init__()
+                self.t3, self.s3gen, self.ve = Part(), Part(), Part()
+
+        import chatterbox.tts as ctts
+        monkeypatch.setattr(ctts.ChatterboxTTS, "from_pretrained",
+                            classmethod(lambda cls, device=None: PartsModel()))
+        eng = ChatterboxEngine(dtype="bfloat16")
+        model = eng._get_model()
+        assert model.t3.dtype == torch.bfloat16
+        assert model.s3gen.dtype == torch.bfloat16
+        assert model.ve.dtype == torch.bfloat16
+
+    def test_unknown_dtype_is_ignored(self, monkeypatch):
+        import chatterbox.tts as ctts
+        monkeypatch.setattr(ctts.ChatterboxTTS, "from_pretrained",
+                            classmethod(lambda cls, device=None: FakeModel()))
+        eng = ChatterboxEngine(dtype="nonsense")
+        assert eng._get_model() is not None  # no raise, stays float32

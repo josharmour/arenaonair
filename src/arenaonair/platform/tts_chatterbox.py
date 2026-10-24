@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 
 from .tts import KokoroEngine
 
@@ -55,6 +56,7 @@ class ChatterboxEngine(KokoroEngine):
         reference_audio: str | None = None,
         voice: str | None = None,
         player_bin: str | None = None,
+        dtype: str | None = None,
     ) -> None:
         # KokoroEngine.__init__ only sets plain attributes + locks; it never
         # imports kokoro. voice doubles as the default reference audio.
@@ -66,6 +68,7 @@ class ChatterboxEngine(KokoroEngine):
         self.cfg_weight = float(cfg_weight)
         self.temperature = float(temperature)
         self.reference_audio = reference_audio or None
+        self.dtype = str(dtype).lower() if dtype else None
 
     # -- availability ------------------------------------------------------
 
@@ -110,7 +113,60 @@ class ChatterboxEngine(KokoroEngine):
                     device = "cpu"
                     self._pipeline = ChatterboxTTS.from_pretrained(device=device)
                 self.device = device
+                self._apply_dtype()
             return self._pipeline
+
+    def _apply_dtype(self) -> None:
+        """Optionally cast the model to a lower precision (speed on MPS/CUDA).
+
+        ``[tts_engines.chatterbox] dtype = "bfloat16"`` halves compute and
+        memory; quality is very close but UNVERIFIED by ear — opt-in until
+        listened to. Unknown names are ignored with a warning.
+        """
+        if not self.dtype or self._pipeline is None:
+            return
+        import torch
+
+        torch_dtype = getattr(torch, self.dtype, None)
+        if torch_dtype is None or not torch_dtype.is_floating_point:
+            logger.warning("chatterbox: unknown dtype %r; staying float32",
+                           self.dtype)
+            return
+        casted = []
+        for part in ("t3", "s3gen", "ve"):
+            module = getattr(self._pipeline, part, None)
+            if module is not None:
+                module.to(dtype=torch_dtype)
+                casted.append(part)
+        logger.info("chatterbox: cast %s to %s", "+".join(casted) or "nothing",
+                    self.dtype)
+
+    def warmup(self) -> bool:
+        """Load the model and run one throwaway synthesis.
+
+        Called on a daemon thread at app start: pays the one-time model load
+        plus kernel/vocoder warm-up up front so the first game-end call costs
+        only synthesis. Never raises; returns True when warm.
+        """
+        try:
+            started = time.monotonic()
+            model = self._get_model()
+            wav = model.generate(
+                "Ready.",
+                audio_prompt_path=self._resolve_reference(None),
+                exaggeration=self.exaggeration,
+                cfg_weight=self.cfg_weight,
+                temperature=self.temperature,
+            )
+            del wav
+            logger.info("chatterbox warm on %s in %.1fs", self.device,
+                        time.monotonic() - started)
+            return True
+        except Exception as exc:
+            logger.warning(
+                "chatterbox warmup failed (%s); the first hype line may be late",
+                exc)
+            return False
 
     def _resolve_reference(self, voice: str | None) -> str | None:
         """Reference wav path for this utterance, or None for model default."""

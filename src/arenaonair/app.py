@@ -263,6 +263,15 @@ class ArenaOnAirApp:
                     voice=self.booth["pbp_voice"],
                 )
             self.speaker = speaker
+            # Pre-heat the hype engine off-thread: model load + one throwaway
+            # synthesis at startup, so the first game-end call costs only
+            # synthesis (~6s on MPS) instead of load+warmup (~20s+).
+            for engine in getattr(speaker, "engines",
+                                  [getattr(speaker, "engine", None)]):
+                if getattr(engine, "name", "") == "chatterbox":
+                    threading.Thread(target=engine.warmup,
+                                     name="arenaonair-chatterbox-warmup",
+                                     daemon=True).start()
             if self.booth_mode == "dual":
                 for engine in getattr(speaker, "engines", [getattr(speaker, "engine", None)]):
                     preload = getattr(engine, "preload_voices", None)
